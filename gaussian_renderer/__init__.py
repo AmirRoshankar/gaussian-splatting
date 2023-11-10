@@ -13,7 +13,9 @@ import torch
 import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
-from utils.sh_utils import eval_sh
+from utils.sh_utils import RGB2SH, eval_sh
+from torchvision.transforms.functional import rgb_to_grayscale
+import torch.nn as nn
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
     """
@@ -53,6 +55,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     means3D = pc.get_xyz
     means2D = screenspace_points
     opacity = pc.get_opacity
+    geometry_opacity = pc.get_geometry_opacity
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
@@ -91,10 +94,60 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
+    
+    # mask_shs = torch.zeros_like(shs)
+    # mask_shs[:, 0] = 2.0
+    
+    campos = torch.clone(viewpoint_camera.camera_center).to(means3D.device)
+    depths = -torch.norm(means3D - campos, dim=1)
+    depths -= depths.min(0, keepdim=True)[0]
+    depths /= depths.max(0, keepdim=True)[0]
+    depths = torch.unsqueeze(depths, -1)
+    depths = depths.repeat(1, 3)
+    
+    depth_shs = torch.zeros_like(shs)
+    depth_shs[:, 0] = 2.0 * depths
+    # mask_shs[:, 0, 0] = 2.5 * (1.0 - depths)
+    # geometry_opacity = torch.ones_like(geometry_opacity) * 10.0
+
+    # mask_opacity = torch.ones_like(opacity)
+   
+    # Rasterize visible Gaussians to image, obtain their radii (on screen). 
+    rendered_depth, radii_mask = rasterizer(
+        means3D = means3D,
+        means2D = means2D,
+        shs = depth_shs,
+        colors_precomp = None,
+        opacities = geometry_opacity,
+        scales = scales,
+        rotations = rotations,
+        cov3D_precomp = cov3D_precomp)
+    
+    rendered_depth = rgb_to_grayscale(rendered_depth)
+    rendered_depth = torch.clip(rendered_depth, 0, 1)
+    
+    mask_shs = torch.zeros_like(shs)
+    mask_shs[:, 0] = 2.0 
+    # Rasterize visible Gaussians to image, obtain their radii (on screen). 
+    rendered_mask, radii_mask = rasterizer(
+        means3D = means3D,
+        means2D = means2D,
+        shs = mask_shs,
+        colors_precomp = None,
+        opacities = geometry_opacity,
+        scales = scales,
+        rotations = rotations,
+        cov3D_precomp = cov3D_precomp)
+    
+    rendered_mask = rgb_to_grayscale(rendered_mask)
+    rendered_mask = torch.clip(rendered_mask, 0, 1)
+    # grayscale_mask = (grayscale_mask > 0.0).float()
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     return {"render": rendered_image,
+            "mask": rendered_mask,
+            "depth": rendered_depth,
             "viewspace_points": screenspace_points,
             "visibility_filter" : radii > 0,
             "radii": radii}

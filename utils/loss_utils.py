@@ -9,10 +9,88 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import cv2
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+import math
 from math import exp
+
+bce_loss = nn.BCELoss()
+
+def dilate(input_tensor, kernel_size):
+    # Create a kernel with ones of size kernel_size
+    kernel = torch.ones(1, 1, kernel_size, kernel_size, device=input_tensor.device)
+    
+    # Use the dilation operation
+    dilated_output = F.conv2d(input_tensor.unsqueeze(0), kernel, padding=(kernel_size - 1) // 2)
+    
+    # Remove the extra dimensions added by unsqueeze
+    dilated_output = dilated_output.squeeze(0)
+    dilated_output = dilated_output > 0
+    
+    return dilated_output.int()
+
+def erode(input_tensor, kernel_size):
+    # Create a kernel with ones of size kernel_size
+    kernel = torch.ones(1, 1, kernel_size, kernel_size, device=input_tensor.device)
+    
+    # Use the erosion operation
+    eroded_output = 1 - F.conv2d(1 - input_tensor.unsqueeze(0), kernel, padding=(kernel_size - 1) // 2)
+    
+    # Remove the extra dimensions added by unsqueeze
+    eroded_output = eroded_output.squeeze(0)
+    eroded_output = eroded_output > 0
+    
+    return eroded_output.int()
+
+def sigmoid_anneal(loss, it, max_its, prop, k=1.0):
+    # k from -1 to 1 is valid
+    # prop from 0 to 1.1 is valid
+    x = torch.ones((1)).to(loss.device) * it
+    x = (x - max_its * prop) / (k * max_its)
+    return loss * torch.sigmoid(x)
+
+
+def anneal_loss(loss, it, max_its, prop):
+    # return loss * math.cos(it * math.pi / (2 * max_its))
+    # return loss * torch.sigmoid(-(torch.ones((1)).to(loss.device)*it - max_its/5))
+    return loss * torch.sigmoid(-(torch.ones((1)).to(loss.device)*it*(1/prop) - max_its))
+
+def cos_anneal_loss(loss, it, max_its):
+    return loss * math.cos(it * math.pi / (2 * max_its))
+    # return loss * torch.sigmoid(-(torch.ones((1)).to(loss.device)*it - max_its/5))
+
+def sin_grow_loss(loss, it, max_its):
+    return loss * math.sin(it * math.pi / (2 * max_its))
+    # return loss * torch.sigmoid(-(torch.ones((1)).to(loss.device)*it - max_its/5))    
+
+def weighted_loss_sum(weights, losses):
+    num = sum([w * l for w,l in zip(weights, losses)])
+    denom = sum(weights)
+    return num / denom
+
+def dice_loss(prediction, target):
+    intersection = torch.sum(target * prediction)
+    union = torch.sum(target + prediction)
+    return 1.0 - 2 * intersection / union
+
+def boundary_loss_func(prediction, target, dice_prop, bce_prop):
+    erode_target = erode(target, 13)
+    dilate_target = dilate(target, 21)
+    mask = dilate_target - erode_target
+    masked_pred = mask * prediction
+    masked_target = mask * target
+    
+    # cv2.imwrite("masked_pred.png", masked_pred.detach().cpu().view(200, 200, 1).numpy() * 255)
+    # cv2.imwrite("masked_target.png", masked_target.detach().cpu().view(200, 200, 1).numpy() * 255)
+    # cv2.imwrite("mask.png", mask.detach().cpu().view(200, 200, 1).numpy() * 255)
+
+    dice = dice_loss(masked_pred, masked_target)
+    bce = bce_loss(masked_pred, masked_target)
+    
+    return weighted_loss_sum([dice_prop, bce_prop], [dice, bce])
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()

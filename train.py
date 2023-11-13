@@ -444,6 +444,10 @@ if __name__ == "__main__":
         
         # Nov 10 combined metric loss
         hparams={'boundary_dice_prop': 0.7072663092769335, 'boundary_bce_prop': 0.7567179358568938, 'img_sigmoid_p': 1.086743312041734, 'img_sigmoid_k': -0.5933987285312401, 'Ll1_depth': 0.38159149238473783, 'ssim_depth': 0.1257942061432118, 'boundary_depth': 0.44228481357720983, 'depth_sigmoid_p': 0.709852751117558, 'depth_sigmoid_k': -0.07288362148599577, 'image_loss': 0.4529836507526636, 'depth_loss': 0.8461601421454328, 'scaling_loss': 0.009799058383410901}
+        
+        # Opt after render bug fix
+        hparams = {'boundary_dice_prop': 0.4318835235454354, 'boundary_bce_prop': 0.9052478919311929, 'img_sigmoid_p': 1.1, 'img_sigmoid_k': -0.5959912983264622, 'Ll1_depth': 0.6171146148837469, 'ssim_depth': 0.0, 'boundary_depth': 0.2780056000996264, 'depth_sigmoid_p': 1.0259194345391112, 'depth_sigmoid_k': 0.835191693021905, 'image_loss': 0.14695685368823122, 'depth_loss': 1.0, 'scaling_loss': 0.0}
+        hparams = {'boundary_dice_prop': 0.4318835235454354, 'boundary_bce_prop': 0.9052478919311929, 'img_sigmoid_p': 1.1, 'img_sigmoid_k': -0.5959912983264622, 'Ll1_depth': 0.6171146148837469, 'ssim_depth': 0.0, 'boundary_depth': 1.0, 'depth_sigmoid_p': 1.0259194345391112, 'depth_sigmoid_k': 0.835191693021905, 'image_loss': 0.14695685368823122, 'depth_loss': 1.0, 'scaling_loss': 1.0}
         training(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, hparam)
 
     # All done

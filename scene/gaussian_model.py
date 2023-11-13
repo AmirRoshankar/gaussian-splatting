@@ -21,6 +21,105 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
+class CompositeGaussianModel():
+    def __init__(self, sh_degree : int, model_count : int):
+        self.max_sh_degree = sh_degree  
+        self.model_count = model_count
+        self.models = [GaussianModel(self.max_sh_degree) for _ in range(model_count)]
+        
+    @property
+    def get_scaling(self, model_idxs):
+        scalings = [self.models[m].get_scaling for m in model_idxs]
+        return torch.cat((scalings), 0)
+    
+    @property
+    def get_rotation(self, model_idxs):
+        rotations = [self.models[m].get_rotation for m in model_idxs]
+        return torch.cat((rotations), 0)
+    
+    @property
+    def get_xyz(self, model_idxs):
+        xyzs = [self.models[m].get_xyz for m in model_idxs]
+        return torch.cat((xyzs), 0)
+    
+    @property
+    def get_features_dc(self, model_idxs):
+        features_dcs = [self.models[m]._features_dc for m in model_idxs]
+        return torch.cat((features_dcs), dim=0)
+    
+    @property
+    def get_features_rest(self, model_idxs):
+        features_rests = [self.models[m]._features_rest for m in model_idxs]
+        return torch.cat((features_rests), dim=0)
+    
+    @property
+    def get_features(self, model_idxs):
+        features_dcs = self.get_features_dc(model_idxs)
+        features_rests = self.get_features_rest(model_idxs)
+        return torch.cat((features_dcs, features_rests), dim=1)
+    
+    @property
+    def get_opacity(self, model_idxs):
+        opacities = [self.models[m].get_opacity for m in model_idxs]
+        return torch.cat((opacities), dim=0)
+    
+    @property
+    def get_geometry_opacity(self, model_idxs):
+        geometry_opacities = [self.models[m].get_geometry_opacity for m in model_idxs]
+        return torch.cat((geometry_opacities), dim=0)
+    
+    def construct_list_of_attributes(self):
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+        # All channels except the 3 DC
+        for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
+            l.append('f_dc_{}'.format(i))
+        for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
+            l.append('f_rest_{}'.format(i))
+        l.append('opacity')
+        l.append('geometry_opacity')
+        for i in range(self._scaling.shape[1]):
+            l.append('scale_{}'.format(i))
+        for i in range(self._rotation.shape[1]):
+            l.append('rot_{}'.format(i))
+        return l
+    
+    def save_ply(self, path):
+        path_dir = os.path.dirname(path)
+        mkdir_p(path_dir)
+
+        all_model_idxs = [i for i in range(self.model_count)]
+        xyz = self.get_xyz(all_model_idxs).detach().cpu().numpy()
+        normals = np.zeros_like(xyz)
+        f_dc = self.get_features_dc(all_model_idxs).detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        f_rest = self.get_features_rest(all_model_idxs).detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        opacities = self.get_opacity(all_model_idxs).detach().cpu().numpy()
+        geometry_opacities = self.get_geometry_opacity(all_model_idxs).detach().cpu().numpy()
+        scale = self.get_scaling(all_model_idxs).detach().cpu().numpy()
+        rotation = self.get_rotation(all_model_idxs).detach().cpu().numpy()
+
+        dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
+
+        elements = np.empty(xyz.shape[0], dtype=dtype_full)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, geometry_opacities,
+                                        scale, rotation), axis=1)
+        elements[:] = list(map(tuple, attributes))
+        el = PlyElement.describe(elements, 'vertex')
+        PlyData([el]).write(path)
+        
+        # save submodels seperately as well
+        base_filename, base_file_extension = os.path.splitext(path)
+        for m in range(self.model_count):
+            model_path = os.path.join(path_dir, f"{base_filename}_{m}.{base_file_extension}")
+            self.models[m].save_ply(model_path)
+    
+    def load_ply(self, path):
+        # save submodels seperately as well
+        path_dir = os.path.dirname(path)
+        base_filename, base_file_extension = os.path.splitext(path)
+        for m in range(self.model_count):
+            model_path = os.path.join(path_dir, f"{base_filename}_{m}.{base_file_extension}")
+            self.models[m].load_ply(model_path)
+
 class GaussianModel:
 
     def setup_functions(self):

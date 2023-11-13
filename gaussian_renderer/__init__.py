@@ -13,7 +13,7 @@ import torch
 import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
-from utils.sh_utils import RGB2SH, eval_sh
+from utils.sh_utils import RGB2SH, eval_sh, C0
 from torchvision.transforms.functional import rgb_to_grayscale
 import torch.nn as nn
 
@@ -106,9 +106,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     depths = depths.repeat(1, 3)
     
     depth_shs = torch.zeros_like(shs)
-    depth_shs[:, 0] = 2.0 * depths
-    # mask_shs[:, 0, 0] = 2.5 * (1.0 - depths)
-    # geometry_opacity = torch.ones_like(geometry_opacity) * 10.0
+    depth_shs[:, 0] = RGB2SH(depths)
+    depth_opacity = torch.ones_like(geometry_opacity) #* 10.0
 
     # mask_opacity = torch.ones_like(opacity)
    
@@ -118,7 +117,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         means2D = means2D,
         shs = depth_shs,
         colors_precomp = None,
-        opacities = geometry_opacity,
+        opacities = depth_opacity,
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
@@ -127,7 +126,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rendered_depth = torch.clip(rendered_depth, 0, 1)
     
     mask_shs = torch.zeros_like(shs)
-    mask_shs[:, 0] = 2.0 
+    mask_shs[:, 0] = RGB2SH(1.0)
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_mask, radii_mask = rasterizer(
         means3D = means3D,

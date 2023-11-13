@@ -272,7 +272,7 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_raw, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, numPoints):
-    combined_metrics = 0
+    result = {}
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss_image', Ll1_image.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/loss_mask', loss_mask.item(), iteration)
@@ -333,7 +333,10 @@ def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_ra
                 l1_test_mask /= len(config['cameras'])     
                 boundary_loss /= len(config['cameras'])
                 if config['name'] == 'test':
-                    combined_metrics = psnr_test_image.item() / 28 + psnr_test_mask.item() / 17 + (1 - boundary_loss.item())/0.7
+                    result["weighted_metric_sum"] = psnr_test_image.item() / 28 + psnr_test_mask.item() / 17 + (1 - boundary_loss.item())/0.7
+                    result["psnr_test_image"] = psnr_test_image.item()
+                    result["psnr_test_mask"] = psnr_test_mask.item()
+                    result["boundary_loss"] = 1 - boundary_loss.item()
                     
                 print("\n[ITER {}] Evaluating Image {}: L1 {} PSNR {} | {} points".format(iteration, config['name'], round(l1_test_image.item(), 4), round(psnr_test_image.item(), 4), numPoints))
                 print("\n[ITER {}] Evaluating Mask {}: L1 {} PSNR {} BOUND {} | {} points".format(iteration, config['name'], round(l1_test_mask.item(), 4), round(psnr_test_mask.item(), 4), round(boundary_loss.item(), 4), numPoints))
@@ -351,7 +354,7 @@ def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_ra
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
         torch.cuda.empty_cache()
         
-    return combined_metrics
+    return result
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -387,8 +390,8 @@ if __name__ == "__main__":
     
     if args.hparam_tune:
         def trainable(config):
-            combined_metrics = training(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, config)
-            return {"combined_metrics": combined_metrics}
+            results = training(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, config)
+            return results
             
         algo = BayesOptSearch()
         algo = ConcurrencyLimiter(algo, max_concurrent=4)
@@ -413,7 +416,7 @@ if __name__ == "__main__":
         }
         
         tune_config = tune.TuneConfig(
-            metric="combined_metrics",
+            metric="weighted_metric_sum",
             mode="max",
             search_alg=algo,
             num_samples=num_samples,
@@ -426,7 +429,7 @@ if __name__ == "__main__":
             trainable_with_resources,
             tune_config=tune_config,
             param_space=search_space,
-            run_config=RunConfig(storage_path="~/Repos/gaussian-splatting/raytune_results_Nov10", name="hparam_tuning")
+            run_config=RunConfig(storage_path="~/Repos/gaussian-splatting/raytune_results_Nov13", name="hparam_tuning")
         )
         results = tuner.fit()
         print("Best hyperparameters found were: ", results.get_best_result().config)

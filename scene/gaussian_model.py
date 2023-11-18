@@ -21,52 +21,80 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
-class CompositeGaussianModel():
+class CompositeGaussianModel:
     def __init__(self, sh_degree : int, model_count : int):
         self.max_sh_degree = sh_degree  
         self.model_count = model_count
         self.models = [GaussianModel(self.max_sh_degree) for _ in range(model_count)]
+    
+    def __getitem__(self, key):
+        return self.models[key]
         
-    @property
     def get_scaling(self, model_idxs):
         scalings = [self.models[m].get_scaling for m in model_idxs]
         return torch.cat((scalings), 0)
     
-    @property
     def get_rotation(self, model_idxs):
         rotations = [self.models[m].get_rotation for m in model_idxs]
         return torch.cat((rotations), 0)
     
-    @property
     def get_xyz(self, model_idxs):
         xyzs = [self.models[m].get_xyz for m in model_idxs]
         return torch.cat((xyzs), 0)
     
-    @property
+    def get_max_radii2D(self, model_idxs):
+        max_radii2Ds = [self.models[m].max_radii2D for m in model_idxs]
+        return torch.cat((max_radii2Ds), 0)
+
+    def get_xyz_gradient_accum(self, model_idxs):
+        xyz_gradient_accums = [self.models[m].xyz_gradient_accum for m in model_idxs]
+        return torch.cat((xyz_gradient_accums), 0)
+    
+    def get_denom(self, model_idxs):
+        denoms = [self.models[m].denom for m in model_idxs]
+        return torch.cat((denoms), 0)
+    
     def get_features_dc(self, model_idxs):
         features_dcs = [self.models[m]._features_dc for m in model_idxs]
         return torch.cat((features_dcs), dim=0)
     
-    @property
     def get_features_rest(self, model_idxs):
         features_rests = [self.models[m]._features_rest for m in model_idxs]
         return torch.cat((features_rests), dim=0)
     
-    @property
     def get_features(self, model_idxs):
         features_dcs = self.get_features_dc(model_idxs)
         features_rests = self.get_features_rest(model_idxs)
         return torch.cat((features_dcs, features_rests), dim=1)
     
-    @property
     def get_opacity(self, model_idxs):
         opacities = [self.models[m].get_opacity for m in model_idxs]
         return torch.cat((opacities), dim=0)
     
-    @property
     def get_geometry_opacity(self, model_idxs):
         geometry_opacities = [self.models[m].get_geometry_opacity for m in model_idxs]
         return torch.cat((geometry_opacities), dim=0)
+    
+    def get_spatial_lr_scale(self, model_idxs):
+        spatial_lr_scales = [self.models[m].spatial_lr_scale for m in model_idxs]
+        return torch.tensor(spatial_lr_scales)
+    
+    def capture(self, model_idxs):
+        return (
+            self.active_sh_degree,
+            self.get_xyz(model_idxs),
+            self.get_features_dc(model_idxs),
+            self.get_features_rest(model_idxs),
+            self.get_scaling(model_idxs),
+            self.get_rotation(model_idxs),
+            self.get_opacity(model_idxs),
+            self.get_geometry_opacity(model_idxs),
+            self.get_max_radii2D(model_idxs),
+            self.get_xyz_gradient_accum(model_idxs),
+            self.get_denom(model_idxs),
+            # self.optimizer.state_dict(),
+            self.get_spatial_lr_scale(model_idxs),
+        )
     
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
@@ -105,21 +133,27 @@ class CompositeGaussianModel():
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
-        
-        # save submodels seperately as well
-        base_filename, base_file_extension = os.path.splitext(path)
+                    
+    def create_from_pcd(self, pcds, spatial_lr_scales):
         for m in range(self.model_count):
-            model_path = os.path.join(path_dir, f"{base_filename}_{m}.{base_file_extension}")
-            self.models[m].save_ply(model_path)
+            self.models[m].create_from_pcd(pcds[m], spatial_lr_scales[m])
+            
+    def restore(self, model_args, training_args):
+        for m in self.models:
+            m.restore(model_args, training_args)
     
-    def load_ply(self, path):
-        # save submodels seperately as well
-        path_dir = os.path.dirname(path)
-        base_filename, base_file_extension = os.path.splitext(path)
-        for m in range(self.model_count):
-            model_path = os.path.join(path_dir, f"{base_filename}_{m}.{base_file_extension}")
-            self.models[m].load_ply(model_path)
+    def training_setup(self, training_args):
+        for m in self.models:
+            m.training_setup(training_args)
+        
+    def update_learning_rate(self, iteration):
+        lrs = [m.update_learning_rate(iteration) for m in self.models]
+        return lrs
 
+    def oneupSHdegree(self):
+        for m in range(self.model_count):
+            m.oneupSHdegree()
+            
 class GaussianModel:
 
     def setup_functions(self):
@@ -518,18 +552,26 @@ class GaussianModel:
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_geometry_opacities,
                                    new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, min_opacity, min_geometry_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
+        if len(self.get_xyz) <= 200_000:
+            self.densify_and_clone(grads, max_grad, extent)
+            self.densify_and_split(grads, max_grad, extent)
 
+        # min_opacity = min(min_opacity, self.get_opacity.max())
         prune_mask = (self.get_opacity < min_opacity).squeeze()
+        # prune_geometry_mask =  (self.get_geometry_opacity < min_geometry_opacity).squeeze()
+        # prune_mask = torch.logical_and(prune_mask, prune_geometry_mask)
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+            
+        if torch.all(prune_mask):
+            prune_mask = ~prune_mask
+            
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()

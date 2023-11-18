@@ -84,6 +84,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
 
+    # print("num pnts", means3D.shape)
+
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, radii = rasterizer(
         means3D = means3D,
@@ -100,6 +102,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     
     campos = torch.clone(viewpoint_camera.camera_center).to(means3D.device)
     depths = -torch.norm(means3D - campos, dim=1)
+    # print("shapes", depths.shape, means3D.shape, campos.shape)
     depths -= depths.min(0, keepdim=True)[0]
     depths /= depths.max(0, keepdim=True)[0]
     depths = torch.unsqueeze(depths, -1)

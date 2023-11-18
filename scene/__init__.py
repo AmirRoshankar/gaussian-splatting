@@ -34,7 +34,7 @@ class CompositeScene:
             args_list.append(copy.deepcopy(args))
             args_list[-1].source_path += "/" + str(i).zfill(3)
             args_list[-1].model_path += "/" + str(i).zfill(3)
-            os.makedirs(args_list[-1].model_path)
+            os.makedirs(args_list[-1].model_path, exist_ok=True)
             
         self.scenes = [Scene(args_list[m], 
                              self.composite_gaussian[m], 

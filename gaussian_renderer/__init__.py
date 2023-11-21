@@ -130,7 +130,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     
     mask_shs = torch.zeros_like(shs)
     mask_shs[:, 0] = RGB2SH(1.0)
-    print("shapes", shs.shape, means3D.shape, depth_shs.shape, mask_shs.shape)
+    # print("shapes", shs.shape, means3D.shape, depth_shs.shape, mask_shs.shape)
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_mask, radii_mask = rasterizer(
         means3D = means3D,

@@ -570,6 +570,7 @@ class GaussianModel:
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
             
         if torch.all(prune_mask):
+            print("Tried to remove all points")
             prune_mask = ~prune_mask
             
         self.prune_points(prune_mask)

@@ -54,6 +54,7 @@ def training_composite(dataset, opt, pipe, testing_iterations, saving_iterations
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
+    all_layer_results = []
     for l in range(num_layers - 1, -1, -1):
         first_iter = 0
         tb_writer = SummaryWriter(scene_composite[l].model_path)
@@ -147,6 +148,7 @@ def training_composite(dataset, opt, pipe, testing_iterations, saving_iterations
 
                 # Log and save
                 results = training_report(tb_writer, iteration, Ll1_image, loss_depth, boundary_loss_raw, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene_composite[l], render, (pipe, background), len(gaussian_composite[l].get_xyz))
+
                 if (iteration in saving_iterations):
                     print("\n[ITER {}] Saving Gaussians".format(iteration))
                     scene_composite[l].save(iteration)
@@ -159,7 +161,7 @@ def training_composite(dataset, opt, pipe, testing_iterations, saving_iterations
 
                     if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                         size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                        gaussian_composite[l].densify_and_prune(opt.densify_grad_threshold, 0.005, 0.005, scene_composite[l].cameras_extent, size_threshold)
+                        gaussian_composite[l].densify_and_prune(opt.densify_grad_threshold, 0.0005, 0.005, scene_composite[l].cameras_extent, size_threshold)
                     
                     if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                         gaussian_composite[l].reset_opacity()
@@ -172,10 +174,22 @@ def training_composite(dataset, opt, pipe, testing_iterations, saving_iterations
                 if (iteration in checkpoint_iterations):
                     print("\n[ITER {}] Saving Checkpoint".format(iteration))
                     torch.save((gaussian_composite[l].capture(), iteration), scene_composite[l].model_path + "/chkpnt" + str(iteration) + "_" + str(l) + ".pth")
-    
+        
+        all_layer_results.append(results)
+
     # print("\nSaving Composite Model")
     # torch.save((gaussian_composite.capture(), iteration), scene_composite.model_path + "/chkpnt" + str(iteration) + "_composite.pth")
-    return results
+    
+    # average layer results
+    ave_results = {}
+    for k in all_layer_results[0].keys(): # iterate over every metric
+        ave_results[k] = 0
+        for r in all_layer_results:
+            ave_results[k] += r[k]
+        ave_results[k] /= len(all_layer_results)
+        
+    assert "weighted_metric_sum" in ave_results, f"all_layer_results {all_layer_results}"
+    return ave_results
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -356,23 +370,33 @@ if __name__ == "__main__":
             trainable_with_resources,
             tune_config=tune_config,
             param_space=search_space,
-            run_config=RunConfig(storage_path="~/Repos/gaussian-splatting/raytune_results_Nov13", name="hparam_tuning")
+            # run_config=RunConfig(storage_path="~/Repos/gaussian-splatting/raytune_results_Nov13", name="hparam_tuning")
         )
         results = tuner.fit()
         print("Best hyperparameters found were: ", results.get_best_result().config)
     else:
-        hparams = {'boundary_dice_prop': 0.3567533266935893, 
-                   'boundary_bce_prop': 0.2713490317738959, 
-                   'img_sigmoid_p': 1.085575630260569, 
-                   'img_sigmoid_k': -0.8508987126404584, 
-                   'Ll1_depth': 0.388677289689482, 
-                   'ssim_depth': 10.1987156815341724, 
-                   'boundary_depth': 0.8287375091519293, 
-                   'depth_sigmoid_p': 0.15501664747223892, 
-                   'depth_sigmoid_k': 0.08539216631649693, 
-                   'image_loss': 0.8021969807540397, 
-                   'depth_loss': 0.28093450968738076, 
-                   'scaling_loss': 0.7722447692966574}
+        # hparams = {'boundary_dice_prop': 0.3567533266935893, 
+        #            'boundary_bce_prop': 0.2713490317738959, 
+        #            'img_sigmoid_p': 1.085575630260569, 
+        #            'img_sigmoid_k': -0.8508987126404584, 
+        #            'Ll1_depth': 0.388677289689482, 
+        #            'ssim_depth': 10.1987156815341724, 
+        #            'boundary_depth': 0.8287375091519293, 
+        #            'depth_sigmoid_p': 0.15501664747223892, 
+        #            'depth_sigmoid_k': 0.08539216631649693, 
+        #            'image_loss': 0.8021969807540397, 
+        #            'depth_loss': 0.28093450968738076, 
+        #            'scaling_loss': 0.7722447692966574}
+        hparams = {'boundary_dice_prop': 0.31277798921035405,
+                   'boundary_bce_prop': 0.7837382510752364,
+                   'img_sigmoid_p': 1.04921049800384, 'img_sigmoid_k': 0.24748616972801818,
+                   'Ll1_depth': 0.3604268271414861,
+                   'ssim_depth': 0.8371196278306522,
+                   'boundary_depth': 0,#0.5661806912250709,
+                   'depth_sigmoid_p': -1.94247421571166, 'depth_sigmoid_k': -0.5359636393823786,
+                   'image_loss': 0.7643533864364274,
+                   'depth_loss': 0.6543420054927197,
+                   'scaling_loss': 0.03893801668766561}
         training_composite(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, hparams)
 
     # All done

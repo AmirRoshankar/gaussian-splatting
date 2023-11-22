@@ -562,14 +562,15 @@ class GaussianModel:
 
         # min_opacity = min(min_opacity, self.get_opacity.max())
         prune_mask = (self.get_opacity < min_opacity).squeeze()
-        # prune_geometry_mask =  (self.get_geometry_opacity < min_geometry_opacity).squeeze()
-        # prune_mask = torch.logical_and(prune_mask, prune_geometry_mask)
+        prune_geometry_mask = (self.get_geometry_opacity < min_geometry_opacity).squeeze()
+        prune_mask = torch.logical_or(prune_mask, prune_geometry_mask)
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
             
         if torch.all(prune_mask):
+            assert False, "Tried to remove all points"
             print("Tried to remove all points")
             prune_mask = ~prune_mask
             

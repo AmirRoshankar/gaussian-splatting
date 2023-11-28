@@ -28,34 +28,66 @@ class CompositeScene:
         """
         self.num_scenes = len(os.listdir(args.source_path)) - 1
         self.model_path = args.model_path
-        self.composite_gaussian = CompositeGaussianModel(args.sh_degree, self.num_scenes)
-        args_list = []
-        for i in range(self.num_scenes):
-            args_list.append(copy.deepcopy(args))
-            args_list[-1].source_path += "/" + str(i).zfill(3)
-            args_list[-1].model_path += "/" + str(i).zfill(3)
-            os.makedirs(args_list[-1].model_path, exist_ok=True)
+        self.max_sh_degree = args.sh_degree
+        # self.composite_gaussian = CompositeGaussianModel(args.sh_degree, self.num_scenes)
+        self.args_list = {}
+        self.load_iteration = load_iteration
+        self.shuffle = shuffle
+        self.resolution_scales = resolution_scales
+        
+        # for i in range(self.num_scenes):
+        #     self.args_list.append(copy.deepcopy(args))
+        #     self.args_list[-1].source_path += "/" + str(i).zfill(3)
+        #     self.args_list[-1].model_path += "/" + str(i).zfill(3)
+        #     os.makedirs(self.args_list[-1].model_path, exist_ok=True)
+        self.args = args            
+        self.cur_scene = None
+        self.cur_gaussian = None
+        self.combined_scene = None
+        self.combined_gaussian = None
+    
+    def set_combined_scene(self, model_idxs, iteration):
+        # Create combined gausss
+        self.combined_gaussian = CompositeGaussianModel(self.max_sh_degree, model_idxs=model_idxs)
+        
+        self.combined_args = copy.deepcopy(self.args)
+        self.combined_args.source_path += "/composite"
+        self.combined_args.model_path += "/composite"
+        os.makedirs(self.combined_args.model_path, exist_ok=True)
+        self.combined_scene = Scene(self.combined_args, 
+                             self.combined_gaussian, 
+                             iteration, 
+                             self.shuffle, 
+                             self.resolution_scales,
+                             combined=True)
+    
+    def set_cur_scene(self, i):
+        self.args_list[i] = copy.deepcopy(self.args)
+        self.args_list[i].source_path += "/" + str(i).zfill(3)
+        self.args_list[i].model_path += "/" + str(i).zfill(3)
+        os.makedirs(self.args_list[i].model_path, exist_ok=True)
             
-        self.scenes = [Scene(args_list[m], 
-                             self.composite_gaussian[m], 
-                             load_iteration, 
-                             shuffle, 
-                             resolution_scales) 
-                       for m in range(self.num_scenes)]
+        self.cur_gaussian = GaussianModel(self.max_sh_degree)
+        self.cur_scene = Scene(self.args_list[i], 
+                             self.cur_gaussian, 
+                             self.load_iteration, 
+                             self.shuffle, 
+                             self.resolution_scales)
     
     def __getitem__(self, key):
         return self.scenes[key]
     
     def save(self, iteration):
-        iteration_path = f"composite_point_cloud/iteration_{iteration}"
-        point_cloud_path = os.path.join(self.model_path, iteration_path)
-        self.composite_gaussian.save_ply(os.path.join(point_cloud_path, "composite_point_cloud.ply"))
+        pass
+        # iteration_path = f"composite_point_cloud/iteration_{iteration}"
+        # point_cloud_path = os.path.join(self.model_path, iteration_path)
+        # self.composite_gaussian.save_ply(os.path.join(point_cloud_path, "composite_point_cloud.ply"))
 
 class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], combined=False):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -108,17 +140,24 @@ class Scene:
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
 
         if self.loaded_iter:
-            self.gaussians.load_ply(os.path.join(self.model_path,
+            if combined:
+                self.gaussians.load_ply(self.model_path, self.loaded_iter)
+            else:
+                self.gaussians.load_ply(os.path.join(self.model_path,
                                                            "point_cloud",
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
-    def save(self, iteration):
-        iteration_path = f"point_cloud/iteration_{iteration}"
-        point_cloud_path = os.path.join(self.model_path, iteration_path)
-        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+    def save(self, iteration, combined=False):
+        if combined:
+            self.gaussians.save_ply(self.model_path, iteration)
+        else:
+            iteration_path = f"point_cloud/iteration_{iteration}"
+            point_cloud_path = os.path.join(self.model_path, iteration_path)
+            self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+            
 
     def getTrainCameras(self, scale=1.0):
         return self.train_cameras[scale]

@@ -8,6 +8,8 @@ import json
 import random
 import pathlib
 
+from tqdm import tqdm
+
 def refresh_dir(path):
     if os.path.exists(path):
         shutil.rmtree(path)
@@ -166,7 +168,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # iterate over each layer and the composite
-    for dir in os.listdir(args.source_path):
+    for dir in tqdm(os.listdir(args.source_path)):
         layer_src_path = os.path.join(args.source_path, dir)
         if not os.path.isdir(layer_src_path):
             continue

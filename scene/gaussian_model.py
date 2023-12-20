@@ -306,10 +306,10 @@ class GaussianModel:
     def get_features(self):
         features_dc = self._features_dc
         features_rest = self._features_rest
+        res = None
         try:
             res = torch.cat((features_dc, features_rest), dim=1)
         except:
-            res = None
             print("issue with getting features")
             print(features_dc.shape, features_rest.shape)
         return res
@@ -439,9 +439,9 @@ class GaussianModel:
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
-        geometry_opacities_new = inverse_sigmoid(torch.min(self.get_geometry_opacity, torch.ones_like(self.get_geometry_opacity)*0.01))
-        optimizable_tensors = self.replace_tensor_to_optimizer(geometry_opacities_new, "geometry_opacity")
-        self._geometry_opacity = optimizable_tensors["geometry_opacity"]
+        # geometry_opacities_new = inverse_sigmoid(torch.min(self.get_geometry_opacity, torch.ones_like(self.get_geometry_opacity)*0.01))
+        # optimizable_tensors = self.replace_tensor_to_optimizer(geometry_opacities_new, "geometry_opacity")
+        # self._geometry_opacity = optimizable_tensors["geometry_opacity"]
 
     def load_ply(self, path):
         plydata = PlyData.read(path)
@@ -614,6 +614,8 @@ class GaussianModel:
         #                            new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+        if torch.all(prune_filter):
+            prune_filter = ~prune_filter
         self.prune_points(prune_filter)
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
@@ -639,15 +641,16 @@ class GaussianModel:
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        if len(self.get_xyz) <= 100_000:
-            self.densify_and_clone(grads, max_grad, extent)
-            self.densify_and_split(grads, max_grad, extent)
+        # if len(self.get_xyz) <= 100_000:
+        self.densify_and_clone(grads, max_grad, extent)
+        self.densify_and_split(grads, max_grad, extent)
 
         # min_opacity = min(min_opacity, self.get_opacity.max())
         if self.get_opacity.shape[0] == 1:
-            prune_mask = torch.ones((1)).bool()
+            prune_mask = torch.ones((1)).bool().to(self.max_radii2D.device)
         else:
             prune_mask = (self.get_opacity < min_opacity).squeeze()
+        # prune_mask = (self.get_opacity < min_opacity).squeeze()
         # if len(prune_mask.shape) != 1:
         #     prune_mask = torch.ones_like(self.get_opacity) > 0
         assert len(prune_mask.shape) == 1, f"prune mask shape {prune_mask.shape} {self.get_opacity.shape}"
@@ -661,7 +664,7 @@ class GaussianModel:
         if torch.all(prune_mask):
             # assert False, "Tried to remove all points"
             # print("Tried to remove all points")
-            prune_mask = False
+            prune_mask = ~prune_mask
             
         self.prune_points(prune_mask)
 

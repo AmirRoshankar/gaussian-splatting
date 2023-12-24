@@ -13,7 +13,7 @@ import torch
 import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import CompositeGaussianModel, GaussianModel
-from utils.sh_utils import RGB2SH, eval_sh, C0
+from utils.sh_utils import RGB2SH, eval_sh
 from torchvision.transforms.functional import rgb_to_grayscale
 import torch.nn as nn
 
@@ -84,9 +84,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
 
-    # print("num pnts", means3D.shape)
-
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
+    # Return nothing if no Gaussians exist
     if shs is None:
         return None
         
@@ -100,12 +99,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         rotations = rotations,
         cov3D_precomp = None)
     
-    # mask_shs = torch.zeros_like(shs)
-    # mask_shs[:, 0] = 2.0
-    
+    # Render depth view
     campos = torch.clone(viewpoint_camera.camera_center).to(means3D.device)
     depths = -torch.norm(means3D - campos, dim=1)
-    # print("shapes", depths.shape, means3D.shape, campos.shape)
     depths -= depths.min(0, keepdim=True)[0]
     depths /= depths.max(0, keepdim=True)[0]
     depths = torch.unsqueeze(depths, -1)
@@ -114,8 +110,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     depth_shs = torch.zeros_like(shs)
     depth_shs[:, 0] = RGB2SH(depths)
     depth_opacity = torch.ones_like(geometry_opacity) #* 10.0
-
-    # mask_opacity = torch.ones_like(opacity)
    
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_depth, radii_mask = rasterizer(
@@ -128,12 +122,14 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         rotations = rotations,
         cov3D_precomp = None)
     
+    # Cast depth view to grayscale
     rendered_depth = rgb_to_grayscale(rendered_depth)
     rendered_depth = torch.clip(rendered_depth, 0, 1)
     
+    # Render binary mask view
     mask_shs = torch.zeros_like(shs)
     mask_shs[:, 0] = RGB2SH(1.0)
-    # print("shapes", shs.shape, means3D.shape, depth_shs.shape, mask_shs.shape)
+
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_mask, radii_mask = rasterizer(
         means3D = means3D,
@@ -145,9 +141,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         rotations = rotations,
         cov3D_precomp = None)
     
+    # Convert grayscale view to black and white
     rendered_mask = rgb_to_grayscale(rendered_mask)
     rendered_mask = torch.clip(rendered_mask, 0, 1)
-    # grayscale_mask = (grayscale_mask > 0.0).float()
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
@@ -160,7 +156,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
 def render_combined(viewpoint_camera, pc : CompositeGaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
     """
-    Render the scene. 
+    Render the scene for a composite gaussian model
     
     Background tensor (bg_color) must be on GPU!
     """
@@ -225,8 +221,6 @@ def render_combined(viewpoint_camera, pc : CompositeGaussianModel, pipe, bg_colo
     else:
         colors_precomp = override_color
 
-    # print("num pnts", means3D.shape)
-
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, radii = rasterizer(
         means3D = means3D,
@@ -238,12 +232,9 @@ def render_combined(viewpoint_camera, pc : CompositeGaussianModel, pipe, bg_colo
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
     
-    # mask_shs = torch.zeros_like(shs)
-    # mask_shs[:, 0] = 2.0
-    
+    # Render depth view of the scene
     campos = torch.clone(viewpoint_camera.camera_center).to(means3D.device)
     depths = -torch.norm(means3D - campos, dim=1)
-    # print("shapes", depths.shape, means3D.shape, campos.shape)
     depths -= depths.min(0, keepdim=True)[0]
     depths /= depths.max(0, keepdim=True)[0]
     depths = torch.unsqueeze(depths, -1)
@@ -252,9 +243,7 @@ def render_combined(viewpoint_camera, pc : CompositeGaussianModel, pipe, bg_colo
     depth_shs = torch.zeros_like(shs)
     depth_shs[:, 0] = RGB2SH(depths)
     depth_opacity = torch.ones_like(geometry_opacity) #* 10.0
-
-    # mask_opacity = torch.ones_like(opacity)
-   
+  
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_depth, radii_mask = rasterizer(
         means3D = means3D,
@@ -266,12 +255,14 @@ def render_combined(viewpoint_camera, pc : CompositeGaussianModel, pipe, bg_colo
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
     
+    # Convert depth view to grayscale
     rendered_depth = rgb_to_grayscale(rendered_depth)
     rendered_depth = torch.clip(rendered_depth, 0, 1)
     
+    # Render binary mask view of the scene
     mask_shs = torch.zeros_like(shs)
     mask_shs[:, 0] = RGB2SH(1.0)
-    # print("shapes", shs.shape, means3D.shape, depth_shs.shape, mask_shs.shape)
+
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_mask, radii_mask = rasterizer(
         means3D = means3D,
@@ -283,9 +274,10 @@ def render_combined(viewpoint_camera, pc : CompositeGaussianModel, pipe, bg_colo
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
     
+    # Cast binary view to grayscale
     rendered_mask = rgb_to_grayscale(rendered_mask)
     rendered_mask = torch.clip(rendered_mask, 0, 1)
-    # grayscale_mask = (grayscale_mask > 0.0).float()
+
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.

@@ -47,14 +47,30 @@ from ray.tune.search import ConcurrencyLimiter
 from ray.tune.search.bayesopt import BayesOptSearch
 
 def training_composite(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, hparams):
+    '''
+        Main training script for Gaussian Splatting Composite model
+        
+        :param dataset: Dataset object for train and test
+        :param opt: Optimization parameters
+        :param pipe: Pipeline for rendering the Gaussian model
+        :param testing_iterations: Iterations to test on 
+        :param saving_iterations: Iterations to save the model on
+        :param checkpoint_iterations: Iterations to create model checkpoints on
+        :param checkpoint: If not None, the path to load a checkpoint model from
+        :param debug_from: Iteration to debug from
+        :param hparams: Training loss hyperparameters
+        
+        :returns: Average results of all the layers
+    '''
     tb_writer = prepare_output_and_logger(dataset)
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     
     scene_composite = CompositeScene(dataset)
-    # gaussian_composite = scene_composite.composite_gaussian 
     num_layers = scene_composite.num_scenes
 
     all_layer_results = []
+    
+    # Iterate over each layer and train it seperately
     for l in range(num_layers):
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
     
@@ -79,15 +95,18 @@ def training_composite(dataset, opt, pipe, testing_iterations, saving_iterations
                     
         for iteration in range(first_iter, max_iterations): 
             background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-            # if iteration > 9000:
-            #     opt.position_lr_init = 0
-            #     opt.position_lr_final = 0
-            #     opt.feature_lr = 0
-            #     opt.opacity_lr = 0.05
-            #     opt.geometry_opacity_lr = 0.05
-            #     opt.scaling_lr = 0.00
-            #     opt.rotation_lr = 0.00
-            #     background = torch.rand_like(background)
+            
+            # Create a new random background after 9000 iterations
+            if iteration > 9000:
+                # Freeze all non-opacity weights
+                opt.position_lr_init = 0
+                opt.position_lr_final = 0
+                opt.feature_lr = 0
+                opt.opacity_lr = 0.05
+                opt.geometry_opacity_lr = 0.05
+                opt.scaling_lr = 0.00
+                opt.rotation_lr = 0.00
+                background = torch.rand_like(background)
                    
             if network_gui.conn == None:
                 network_gui.try_connect()
@@ -165,21 +184,7 @@ def training_composite(dataset, opt, pipe, testing_iterations, saving_iterations
             
             scaling_loss = cur_gaussian.scaling_reg_loss()
             annealed_scaling_loss = sigmoid_anneal(scaling_loss, iteration, max_iterations, hparams['depth_sigmoid_p'], hparams['depth_sigmoid_k'])
-            
-            # if torch.any(torch.isnan(scaling_loss)):
-            #     if torch.any(torch.isnan(loss_depth)):
-            #         loss = annealed_image_loss
-            #     else:
-            #         annealed_depth_loss = sigmoid_anneal(loss_depth, iteration, max_iterations, hparams['depth_sigmoid_p'], hparams['depth_sigmoid_k'])
-            #         loss = weighted_loss_sum([hparams['image_loss'], hparams['depth_loss']], [annealed_image_loss, annealed_depth_loss])
-            # else:
-            #     annealed_scaling_loss = sigmoid_anneal(scaling_loss, iteration, max_iterations, hparams['depth_sigmoid_p'], hparams['depth_sigmoid_k'])
-            #     if torch.any(torch.isnan(loss_depth)):
-            #         loss = weighted_loss_sum([hparams['image_loss'], hparams['scaling_loss']], [annealed_image_loss, annealed_scaling_loss])
-            #     else:
-            #         annealed_depth_loss = sigmoid_anneal(loss_depth, iteration, max_iterations, hparams['depth_sigmoid_p'], hparams['depth_sigmoid_k'])
-            #         loss = weighted_loss_sum([hparams['image_loss'], hparams['depth_loss'], hparams['scaling_loss']], [annealed_image_loss, annealed_depth_loss, annealed_scaling_loss])
-            
+          
             loss = weighted_loss_sum([hparams['image_loss'], hparams['depth_loss'], hparams['scaling_loss']], [annealed_image_loss, annealed_depth_loss, annealed_scaling_loss])                                    
             loss *= 10
             loss = loss_image         
@@ -226,18 +231,17 @@ def training_composite(dataset, opt, pipe, testing_iterations, saving_iterations
                     torch.save((cur_gaussian.capture(), iteration), scene_composite.cur_scene.model_path + "/chkpnt" + str(iteration) + "_" + str(l) + ".pth")
 
         all_layer_results.append(results)
-        # opt.position_lr_init = 0.00016
-        # opt.position_lr_final = 0.0000016
-        # opt.feature_lr = 0.0025
-        # opt.opacity_lr = 0.05
-        # opt.geometry_opacity_lr = 0.05
-        # opt.scaling_lr = 0.005
-        # opt.rotation_lr = 0.001
+        
+        # Unfreeze after layer is done learning
+        opt.position_lr_init = 0.00016
+        opt.position_lr_final = 0.0000016
+        opt.feature_lr = 0.0025
+        opt.opacity_lr = 0.05
+        opt.geometry_opacity_lr = 0.05
+        opt.scaling_lr = 0.005
+        opt.rotation_lr = 0.001
 
-    # print("\nSaving Composite Model")
-    # torch.save((gaussian_composite.capture(), iteration), scene_composite.model_path + "/chkpnt" + str(iteration) + "_composite.pth")
-    
-    # average layer results
+    # Get average layer results
     ave_results = {}
     for k in all_layer_results[0].keys(): # iterate over every metric
         ave_results[k] = 0
@@ -248,7 +252,14 @@ def training_composite(dataset, opt, pipe, testing_iterations, saving_iterations
     assert "weighted_metric_sum" in ave_results, f"all_layer_results {all_layer_results}"
     return ave_results
 
-def prepare_output_and_logger(args):    
+def prepare_output_and_logger(args):
+    '''
+        Create path for saving the model and a logger for tracking results
+        
+        :param args: arguments containing the model path
+        
+        :returns: tensorboard logger
+    '''
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str=os.getenv('OAR_JOB_ID')
@@ -271,6 +282,25 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_raw, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, numPoints, new_background=None):
+    '''
+        Logs training progress with tensorboard
+        :param tb_writer: Tensorboard logging object
+        :param iteration: Current iteration in training
+        :param Ll1_image: L1 loss for render
+        :param loss_mask: Loss on mask of render
+        :param boundary_loss_raw: Boundary loss for render
+        :param loss: Overall oss
+        :param l1_loss: L1 loss function
+        :param elapsed: Elapsed time
+        :param testing_iterations: Iterations to perform testing on
+        :param scene: Scene object for the model and ground truth views
+        :param renderFunc: Function for rendering the views of the model
+        :param renderArgs: Arguments to pass to rendering function
+        :param numPoints: Number of Gaussians in model
+        :param new_background: If not None, the new background used to render
+        
+        :returns: A dictionary of training results at this point in training
+    '''
     result = {}
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss_image', Ll1_image.item(), iteration)
@@ -326,19 +356,12 @@ def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_ra
                         # if iteration == testing_iterations[0]:
                         tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                         tb_writer.add_images(config['name'] + "_view_{}/ground_truth_mask".format(viewpoint.image_name), gt_mask[None], global_step=iteration)
-                            # tb_writer.add_images(config['name'] + "_view_{}/ground_truth_mask_blurred".format(viewpoint.image_name), gt_mask_blurred, global_step=iteration)
                     boundary_loss += boundary_loss_func(mask, gt_mask_bin, 1, 1).double()   
                     l1_test_image += l1_loss(image, gt_image).mean().double()
                     l1_test_mask += l1_loss(depths, gt_mask).mean().double()
                     psnr_test_image += psnr(image, gt_image).mean().double()
                     psnr_test_mask += psnr(depths, gt_mask).mean().double()
-                    # if config['name'] == 'train':
-                    #     rand_id = int(10000000 * random.random())
-                    #     print(f"cur sample scores {rand_id}: PSNR {psnr(image, gt_image).mean().double()}, L1 {l1_loss(image, gt_image).mean().double()}")
-                    #     print(f"was render none? {render_res is None}")#save gt image
-                    #     save_image(gt_image, f"{rand_id}_gt.png")
-                    #     #save render
-                    #     save_image(image, f"{rand_id}_render.png")
+                    
                 psnr_test_image /= len(config['cameras'])
                 psnr_test_mask /= len(config['cameras'])
                 l1_test_image /= len(config['cameras'])          
@@ -408,6 +431,7 @@ if __name__ == "__main__":
         algo = ConcurrencyLimiter(algo, max_concurrent=4)
         num_samples = 100
         
+        # Hyperparamter search space
         search_space = {
             "boundary_dice_prop": tune.uniform(0.0, 1.0),
             "boundary_bce_prop": tune.uniform(0.0, 1.0),
@@ -418,12 +442,9 @@ if __name__ == "__main__":
             'boundary_depth': tune.uniform(0.0, 1.0),
             "depth_sigmoid_p": tune.uniform(-2.0, 0),
             "depth_sigmoid_k": tune.uniform(-1.0, 0),
-            # "scale_sigmoid_p": tune.uniform(0.0, 1.1),
-            # "scale_sigmoid_k": tune.uniform(-1.0, 1.0),
             'image_loss': tune.uniform(0.0, 1.0),
             'depth_loss': tune.uniform(0.0, 1.0),
             'scaling_loss': tune.uniform(0.0, 1.0),
-            # 'loss_multiplier': tune.uniform(0.0, 33.0)
         }
         
         tune_config = tune.TuneConfig(
@@ -445,41 +466,6 @@ if __name__ == "__main__":
         results = tuner.fit()
         print("Best hyperparameters found were: ", results.get_best_result().config)
     else:
-        # hparams = {'boundary_dice_prop': 0.3567533266935893, 
-        #            'boundary_bce_prop': 0.2713490317738959, 
-        #            'img_sigmoid_p': 1.085575630260569, 
-        #            'img_sigmoid_k': -0.8508987126404584, 
-        #            'Ll1_depth': 0.388677289689482, 
-        #            'ssim_depth': 10.1987156815341724, 
-        #            'boundary_depth': 0.8287375091519293, 
-        #            'depth_sigmoid_p': 0.15501664747223892, 
-        #            'depth_sigmoid_k': 0.08539216631649693, 
-        #            'image_loss': 0.8021969807540397, 
-        #            'depth_loss': 0.28093450968738076, 
-        #            'scaling_loss': 0.7722447692966574}
-        # hparams = {'boundary_dice_prop': 0.31277798921035405,
-        #            'boundary_bce_prop': 0.7837382510752364,
-        #            'img_sigmoid_p': 1.04921049800384, 'img_sigmoid_k': 0.24748616972801818,
-        #            'Ll1_depth': 0.3604268271414861,
-        #            'ssim_depth': 0.8371196278306522,
-        #            'boundary_depth': 0,#0.5661806912250709,
-        #            'depth_sigmoid_p': -1.94247421571166, 'depth_sigmoid_k': -0.5359636393823786,
-        #            'image_loss': 0.7643533864364274,
-        #            'depth_loss': 0.6543420054927197,
-        #            'scaling_loss': 0.03893801668766561}
-        # hparams = {'boundary_dice_prop': 0.7290071680409873, 'boundary_bce_prop': 0.8154614284548342, 'img_sigmoid_p': 0.4931925073102317, 'img_sigmoid_k': 0.726206851751187, 'Ll1_depth': 0.005522117123602399, 'ssim_depth': 0.06355835028602363, 'boundary_depth': 0.7068573438476171, 'depth_sigmoid_p': -0.5661370858229096, 'depth_sigmoid_k': -0.8519106965318193, 'image_loss': 0.11586905952512971, 'depth_loss': 0.7712703466859457, 'scaling_loss': 0.3308980248526492}
-
-        # hparams = {'boundary_dice_prop': 0.7290071680409873, 'boundary_bce_prop': 0.8154614284548342, 'img_sigmoid_p': 0.4931925073102317, 'img_sigmoid_k': 0.726206851751187, 'Ll1_depth': 0.1, 'ssim_depth': 0.1, 'boundary_depth': 1.0, 'depth_sigmoid_p': -0.5661370858229096, 'depth_sigmoid_k': -0.8519106965318193, 'image_loss': 0.11586905952512971, 'depth_loss': 0.7712703466859457, 'scaling_loss': 0.3308980248526492, 'black_spot_loss': 1}
-        # hparams = {'boundary_dice_prop': 0.6075448519014384, 'boundary_bce_prop': 0.5924145688620425, 'img_sigmoid_p': 0.6092275383467414, 'img_sigmoid_k': 0.8083973481164611, 'Ll1_depth': 0.19967378215835974, 'ssim_depth': 0.6842330265121569, 'boundary_depth': 0.046450412719997725, 'depth_sigmoid_p': -0.10222892549333351, 'depth_sigmoid_k': -0.9349484070147205, 'image_loss': 0.9656320330745594, 'depth_loss': 0.17052412368729153, 'scaling_loss': 0.09767211400638387, 'black_spot_loss': 0.5142344384136116}
-        
-        # Full opt Nov 23
-        # hparams = {'boundary_dice_prop': 0.476895892814544, 'boundary_bce_prop': 0.738296076737068, 'img_sigmoid_p': 1.2628183658736123, 'img_sigmoid_k': 0.6213306018236187, 'Ll1_depth': 0.216953796587727, 'ssim_depth': 0.39368248306238063, 'boundary_depth': 0.7291568543774158, 'depth_sigmoid_p': -1.392618330627611, 'depth_sigmoid_k': -0.8504906968214253, 'image_loss': 0.341807352331942, 'depth_loss': 0.5802261338704223, 'scaling_loss': 0.19161849862216665}
-
-
-        # hparams = {'boundary_dice_prop': 0.476895892814544, 'boundary_bce_prop': 0.738296076737068, 'img_sigmoid_p': 1.2628183658736123, 'img_sigmoid_k': 0.6213306018236187, 'Ll1_depth': 0.216953796587727, 'ssim_depth': 0.39368248306238063, 'boundary_depth': 0.07291568543774158, 'depth_sigmoid_p': -1.392618330627611, 'depth_sigmoid_k': -0.8504906968214253, 'image_loss': 0.341807352331942, 'depth_loss': 0.5802261338704223, 'scaling_loss': 1.0} # background 2
-        
-        # Colour background <100 000 pnts
-        # hparams = {'boundary_dice_prop': 0.6375574713552131, 'boundary_bce_prop': 0.32518332202674705, 'img_sigmoid_p': 1.1225543951389925, 'img_sigmoid_k': 0.7607850486168974, 'Ll1_depth': 0.3109823217156622, 'ssim_depth': 0.49379559636439074, 'boundary_depth': 0.7296061783380641, 'depth_sigmoid_p': -1.7608115081233966, 'depth_sigmoid_k': -0.5277850748380507, 'image_loss': 0.713244787222995, 'depth_loss': 0.8872127425763265, 'scaling_loss': 0.770967179954561} # background 3
         
         hparams = {'boundary_dice_prop': 0.6375574713552131, 'boundary_bce_prop': 0.32518332202674705, 'img_sigmoid_p': 1.1225543951389925, 'img_sigmoid_k': 0.7607850486168974, 'Ll1_depth': 0.3109823217156622, 'ssim_depth': 0.49379559636439074, 'boundary_depth': 0.7296061783380641, 'depth_sigmoid_p': -1.7608115081233966, 'depth_sigmoid_k': -0.5277850748380507, 'image_loss': 0.713244787222995, 'depth_loss': 0.8872127425763265, 'scaling_loss': 10.0} # background 4
         ave_res = training_composite(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, hparams)

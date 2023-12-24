@@ -45,6 +45,20 @@ from ray.tune.search import ConcurrencyLimiter
 from ray.tune.search.bayesopt import BayesOptSearch
 
 def training_composite_polish(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, hparams):
+    '''
+        Training script for a composite model that includes full model fine-tuning
+                
+        :param dataset: Dataset object for train and test
+        :param opt: Optimization parameters
+        :param pipe: Pipeline for rendering the Gaussian model
+        :param testing_iterations: Iterations to test on 
+        :param saving_iterations: Iterations to save the model on
+        :param checkpoint_iterations: Iterations to create model checkpoints on
+        :param checkpoint: If not None, the path to load a checkpoint model from
+        :param debug_from: Iteration to debug from
+        :param hparams: Training loss hyperparameters
+    '''
+    
     tb_writer = prepare_output_and_logger(dataset)
     
     scene_composite = CompositeScene(dataset)
@@ -56,9 +70,7 @@ def training_composite_polish(dataset, opt, pipe, testing_iterations, saving_ite
     layer_idxs = range(7, num_layers)
 
     all_layer_results = []
-    for l in tqdm(layer_idxs):
-        continue
-        
+    for l in tqdm(layer_idxs):       
         first_iter = 0
         tb_writer = SummaryWriter(scene_composite.cur_scene.model_path)
         cur_gaussian.training_setup(opt)
@@ -236,7 +248,7 @@ def training_composite_polish(dataset, opt, pipe, testing_iterations, saving_ite
             pipe.debug = True
         render_pkg = render_combined(viewpoint_cam, cur_gaussian, pipe, background)
         image, mask, depth, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["mask"], render_pkg["depth"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        # visibility_filter = visibility_filter>0
+        
         ######Loss#######
         #################
         gt_image = viewpoint_cam.original_image.cuda()
@@ -260,7 +272,7 @@ def training_composite_polish(dataset, opt, pipe, testing_iterations, saving_ite
         scaling_loss = cur_gaussian.scaling_reg_loss()
         annealed_scaling_loss = sigmoid_anneal(scaling_loss, iteration, max_iterations, hparams['depth_sigmoid_p'], hparams['depth_sigmoid_k'])
         
-        loss = loss_image#weighted_loss_sum([hparams['image_loss'], hparams['depth_loss'], hparams['scaling_loss']], [annealed_image_loss, annealed_depth_loss, annealed_scaling_loss])                                    
+        loss = weighted_loss_sum([hparams['image_loss'], hparams['depth_loss'], hparams['scaling_loss']], [annealed_image_loss, annealed_depth_loss, annealed_scaling_loss])                                    
         loss *= 10            
         loss.backward()
 
@@ -311,22 +323,15 @@ def training_composite_polish(dataset, opt, pipe, testing_iterations, saving_ite
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((cur_gaussian.capture(), iteration), combined_scene.model_path + "/chkpnt" + str(iteration) + "_" + str(l) + ".pth")
-        
-    # print("\nSaving Composite Model")
-    # torch.save((gaussian_composite.capture(), iteration), scene_composite.model_path + "/chkpnt" + str(iteration) + "_composite.pth")
-    
-    # average layer results
-    # ave_results = {}
-    # for k in all_layer_results[0].keys(): # iterate over every metric
-    #     ave_results[k] = 0
-    #     for r in all_layer_results:
-    #         ave_results[k] += r[k]
-    #     ave_results[k] /= len(all_layer_results)
-        
-    # assert "weighted_metric_sum" in ave_results, f"all_layer_results {all_layer_results}"
-    # return ave_results
 
-def prepare_output_and_logger(args):    
+def prepare_output_and_logger(args):
+    '''
+        Create path for saving the model and a logger for tracking results
+        
+        :param args: arguments containing the model path
+        
+        :returns: tensorboard logger
+    '''
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str=os.getenv('OAR_JOB_ID')
@@ -349,6 +354,25 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_raw, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, numPoints):
+    '''
+        Logs training progress with tensorboard
+        :param tb_writer: Tensorboard logging object
+        :param iteration: Current iteration in training
+        :param Ll1_image: L1 loss for render
+        :param loss_mask: Loss on mask of render
+        :param boundary_loss_raw: Boundary loss for render
+        :param loss: Overall oss
+        :param l1_loss: L1 loss function
+        :param elapsed: Elapsed time
+        :param testing_iterations: Iterations to perform testing on
+        :param scene: Scene object for the model and ground truth views
+        :param renderFunc: Function for rendering the views of the model
+        :param renderArgs: Arguments to pass to rendering function
+        :param numPoints: Number of Gaussians in model
+        
+        :returns: A dictionary of training results at this point in training
+    '''
+    
     result = {}
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss_image', Ll1_image.item(), iteration)
@@ -380,16 +404,6 @@ def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_ra
                     mask = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["mask"], 0.0, 1.0)
                     gt_mask = torch.clamp(viewpoint.original_depth_mask.to("cuda"), 0.0, 1.0)   
                     gt_mask_bin = (gt_mask > 0).float()
-                    # mask_bin = (mask > 0).float()
-                    # gt_mask_bin = (gt_mask > 0).float()
-                    # blur the ground truth
-                    # gt_mask_blurred = torch.unsqueeze(gt_mask, 0)
-                    # gt_mask_blurred = gt_mask_blurred.repeat(1, 3, 1, 1)
-                    # # gt_mask_blurred = F.interpolate(gt_mask_blurred, scale_factor=1/10, mode='bilinear', align_corners=False)
-                    # # gt_mask_blurred = F.interpolate(gt_mask_blurred, scale_factor=10, mode='bilinear', align_corners=False)
-                    # gt_mask_blurred = gaussian_blur(gt_mask_blurred)
-                    # gt_mask_blurred.squeeze_(0)
-                    # gt_mask_blurred = rgb_to_grayscale(gt_mask_blurred) 
                     
                     if tb_writer and (idx < 5):
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
@@ -464,63 +478,11 @@ if __name__ == "__main__":
     dataset = lp.extract(args)
     opt = op.extract(args)
     pipe = pp.extract(args)
-    if args.hparam_tune:
-        exit()
-        def trainable(config):
-            results = training_composite(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, config)
-            return results
-            
-        algo = BayesOptSearch()
-        algo = ConcurrencyLimiter(algo, max_concurrent=4)
-        num_samples = 100
-        
-        search_space = {
-            "boundary_dice_prop": tune.uniform(0.0, 1.0),
-            "boundary_bce_prop": tune.uniform(0.0, 1.0),
-            "img_sigmoid_p": tune.uniform(0, 2.0),
-            "img_sigmoid_k": tune.uniform(0, 1.0),
-            'Ll1_depth': tune.uniform(0.0, 1.0),
-            'ssim_depth': tune.uniform(0.0, 1.0),
-            'boundary_depth': tune.uniform(0.0, 1.0),
-            "depth_sigmoid_p": tune.uniform(-2.0, 0),
-            "depth_sigmoid_k": tune.uniform(-1.0, 0),
-            # "scale_sigmoid_p": tune.uniform(0.0, 1.1),
-            # "scale_sigmoid_k": tune.uniform(-1.0, 1.0),
-            'image_loss': tune.uniform(0.0, 1.0),
-            'depth_loss': tune.uniform(0.0, 1.0),
-            'scaling_loss': tune.uniform(0.0, 1.0),
-            # 'loss_multiplier': tune.uniform(0.0, 33.0)
-        }
-        
-        tune_config = tune.TuneConfig(
-            metric="weighted_metric_sum",
-            mode="max",
-            search_alg=algo,
-            num_samples=num_samples,
-        )
-
-        # Start a Tune run and print the best result.
-        trainable_with_resources = tune.with_resources(trainable, resources={"gpu": 1, "cpu": 8})
-        
-        tuner = tune.Tuner(
-            trainable_with_resources,
-            tune_config=tune_config,
-            param_space=search_space,
-            # run_config=RunConfig(storage_path="~/Repos/gaussian-splatting/raytune_results_Nov13", name="hparam_tuning")
-        )
-        results = tuner.fit()
-        print("Best hyperparameters found were: ", results.get_best_result().config)
-    else:
-        # Full opt Nov 23
-        hparams = {'boundary_dice_prop': 0.476895892814544, 'boundary_bce_prop': 0.738296076737068, 'img_sigmoid_p': 1.2628183658736123, 'img_sigmoid_k': 0.6213306018236187, 'Ll1_depth': 0.216953796587727, 'ssim_depth': 0.39368248306238063, 'boundary_depth': 0.7291568543774158, 'depth_sigmoid_p': -1.392618330627611, 'depth_sigmoid_k': -0.8504906968214253, 'image_loss': 0.341807352331942, 'depth_loss': 0.5802261338704223, 'scaling_loss': 0.19161849862216665}
-
-        # scaling
-        hparams = {'boundary_dice_prop': 0.476895892814544, 'boundary_bce_prop': 0.738296076737068, 'img_sigmoid_p': 1.2628183658736123, 'img_sigmoid_k': 0.6213306018236187, 'Ll1_depth': 0.216953796587727, 'ssim_depth': 0.39368248306238063, 'boundary_depth': 0.7291568543774158, 'depth_sigmoid_p': -1.392618330627611, 'depth_sigmoid_k': -0.8504906968214253, 'image_loss': 0.341807352331942, 'depth_loss': 0.5802261338704223, 'scaling_loss': 0.8}
-       
-        # Polish
-        hparams = {'boundary_dice_prop': 0.476895892814544, 'boundary_bce_prop': 0.738296076737068, 'img_sigmoid_p': 1.2628183658736123, 'img_sigmoid_k': 0.6213306018236187, 'Ll1_depth': 0.216953796587727, 'ssim_depth': 0.39368248306238063, 'boundary_depth': 0.7291568543774158, 'depth_sigmoid_p': -1.392618330627611, 'depth_sigmoid_k': -0.8504906968214253, 'image_loss': 0.341807352331942, 'depth_loss': 0.5802261338704223, 'scaling_loss': 0.8}
-        ave_res = training_composite_polish(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, hparams)
-        print("Average results:")
-        print(ave_res)
+    
+    # Polish
+    hparams = {'boundary_dice_prop': 0.476895892814544, 'boundary_bce_prop': 0.738296076737068, 'img_sigmoid_p': 1.2628183658736123, 'img_sigmoid_k': 0.6213306018236187, 'Ll1_depth': 0.216953796587727, 'ssim_depth': 0.39368248306238063, 'boundary_depth': 0.7291568543774158, 'depth_sigmoid_p': -1.392618330627611, 'depth_sigmoid_k': -0.8504906968214253, 'image_loss': 0.341807352331942, 'depth_loss': 0.5802261338704223, 'scaling_loss': 0.8}
+    ave_res = training_composite_polish(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, hparams)
+    print("Average results:")
+    print(ave_res)
     # All done
     print("\nTraining complete.")

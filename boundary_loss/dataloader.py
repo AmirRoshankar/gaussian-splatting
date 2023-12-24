@@ -26,6 +26,10 @@ from boundary_loss.utils import one_hot, depth
 F = Union[Path, BinaryIO]
 D = Union[Image.Image, np.ndarray, Tensor]
 
+'''
+    Data loading functions for boundary loss
+    Source: https://github.com/LIVIAETS/boundary-loss/blob/master/losses.py
+'''
 
 resizing_fn = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
 

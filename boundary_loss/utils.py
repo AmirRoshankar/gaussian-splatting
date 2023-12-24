@@ -20,6 +20,10 @@ from PIL import Image, ImageOps
 from medpy.metric.binary import hd
 from scipy.ndimage import distance_transform_edt as eucl_distance
 
+'''
+    Utility methods for boundary loss 
+    Source: https://github.com/LIVIAETS/boundary-loss/blob/master/losses.py
+'''
 
 colors = ["c", "r", "g", "b", "m", 'y', 'k', 'chartreuse', 'coral', 'gold', 'lavender',
           'silver', 'tan', 'teal', 'wheat', 'orchid', 'orange', 'tomato']

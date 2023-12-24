@@ -9,14 +9,8 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-from ast import List
 import os
-import cv2
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch import einsum
-from torchvision.transforms.functional import rgb_to_grayscale
 from random import randint
 from utils.loss_utils import boundary_loss_func, l1_loss, sigmoid_anneal, ssim, weighted_loss_sum
 from gaussian_renderer import render, network_gui
@@ -34,76 +28,30 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 from  torchvision.transforms import GaussianBlur
-import numpy as np
-from boundary_loss.losses import BoundaryLoss
-from boundary_loss.dataloader import dist_map_transform
 from ray import tune
-import ray
 from ray.train import RunConfig
 from ray.tune.search import ConcurrencyLimiter
 from ray.tune.search.bayesopt import BayesOptSearch
 
-def distance_transform(binary_image, iterations=20):
-    """
-    Approximate distance transform of a binary image tensor using dilations.
-    The result is an image where the intensity is inversely proportional to the distance from the nearest boundary.
-    
-    Args:
-    binary_image (torch.Tensor): A binary image tensor of shape (H, W).
-    iterations (int): The number of iterations to perform the dilation, which affects the smoothness of the distance map.
-    
-    Returns:
-    torch.Tensor: The approximated distance transform of the binary image.
-    """
-    # Invert the binary image since we're interested in the distance to the boundary
-    bin_img = binary_image.float().unsqueeze(0)
-    inverted_image = 1 - binary_image.float().unsqueeze(0)
-    
-    # Prepare a kernel for dilation
-    kernel_size = 3
-    kernel = torch.ones((1, 1, kernel_size, kernel_size), dtype=torch.float32, device=inverted_image.device)
-    
-    # Initialize distance map
-    distance_map = torch.zeros_like(bin_img)
-    distance_map_inv = torch.zeros_like(inverted_image)
-    
-    # Iterate to accumulate the distance map
-    for i in range(1, iterations + 1):
-        # Dilation step
-        dilated_image = F.conv2d(bin_img, kernel, padding=1)
-        dilated_image_inv = F.conv2d(inverted_image, kernel, padding=1)
-        
-        # Update the distance map where the dilation has reached new pixels
-        distance_map += (dilated_image > 0).float() #* (distance_map == 0).float()
-        distance_map_inv += (dilated_image_inv > 0).float()
-        
-        # Update the binary image for the next iteration
-        bin_img = (dilated_image > 0).float()
-        inverted_image = (dilated_image_inv > 0).float()
-    
-    # Normalize the distance map
-    distance_map /= distance_map.max()
-        
-    # Normalize the distance map inv
-    distance_map_inv /= distance_map_inv.max()
-    
-    # combine distance maps
-    distance_map[distance_map == 1.0] = 0.0
-    distance_map_inv[distance_map_inv == 1.0] = 0.0
-    distance_map += distance_map_inv
-    distance_map /= distance_map.max()
-    
-    
-    
-    return distance_map
-
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, hparams):
+    '''
+        Main training script for Gaussian Splatting
+        
+        :param dataset: Dataset object for train and test
+        :param opt: Optimization parameters
+        :param pipe: Pipeline for rendering the Gaussian model
+        :param testing_iterations: Iterations to test on 
+        :param saving_iterations: Iterations to save the model on
+        :param checkpoint_iterations: Iterations to create model checkpoints on
+        :param checkpoint: If not None, the path to load a checkpoint model from
+        :param debug_from: Iteration to debug from
+        :param hparams: Training loss hyperparameters
+        
+        :returns: Model's final training results
+    '''
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    mask_loss_func = nn.BCELoss()
-    gaussian_blur = GaussianBlur(11)
-    disttransform = dist_map_transform([1, 1], 2)
-    # boundary_loss_func = BoundaryLoss(idc=[1])
+    
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
@@ -165,20 +113,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_mask = viewpoint_cam.original_depth_mask.cuda()
         gt_mask_bin = gt_mask.clone()
         gt_mask_bin[gt_mask > 0.0] = 1.0
-        # gt_dist_map = disttransform(gt_mask_bin.cpu()).to(gt_mask_bin.device)
-        
-        # gt_depth_view = viewpoint_cam.original_depth_mask.cuda()
-        
-        # gt_mask_blurred = torch.unsqueeze(gt_mask, 0)
-        # gt_mask_blurred = gt_mask_blurred.repeat(1, 3, 1, 1)
-        
-        # blur the ground truth
-        # gt_mask_blurred = F.interpolate(gt_mask_blurred, scale_factor=1/10, mode='bilinear', align_corners=False)
-        # gt_mask_blurred = F.interpolate(gt_mask_blurred, scale_factor=10, mode='bilinear', align_corners=False)
-        # gt_mask_blurred = gaussian_blur(gt_mask_blurred)
-        # gt_mask_blurred.squeeze_(0)
-        # gt_mask_blurred = rgb_to_grayscale(gt_mask_blurred)
-        
+              
         boundary_loss_raw = boundary_loss_func(mask, gt_mask_bin, hparams['boundary_dice_prop'], hparams['boundary_bce_prop'])
         
         Ll1_image = l1_loss(image, gt_image)
@@ -188,25 +123,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         Ll1_depth = l1_loss(depth, gt_mask)        
         ssim_depth = 1.0 - ssim(depth, gt_mask)
         
-        # loss_depth = (1.0 - opt.lambda_dssim) * Ll1_depth + opt.lambda_dssim * (1.0 - ssim(depth, gt_mask))
         loss_depth = weighted_loss_sum([hparams['Ll1_depth'], hparams['ssim_depth'], hparams['boundary_depth']], [Ll1_depth, ssim_depth, boundary_loss_raw])
         annealed_depth_loss = sigmoid_anneal(loss_depth, iteration, max_iterations, hparams['depth_sigmoid_p'], hparams['depth_sigmoid_k'])
-        # cos_anneal_loss(loss_depth, iteration, max_iterations)
-        # loss = weighted_loss_sum(1, 1, loss_image, annealed_mask_loss)
-        
-        # boundary_loss_raw = boundary_loss_func(mask_bin, gt_dist_map)
-        # boundary_loss = boundary_loss_raw
-        # boundary_loss =  sin_grow_loss(boundary_loss_raw, iteration, max_iterations)
-        # loss = weighted_loss_sum(1, 2, loss, boundary_loss)
         
         scaling_loss = gaussians.scaling_reg_loss()
         annealed_scaling_loss = sigmoid_anneal(scaling_loss, iteration, max_iterations, hparams['depth_sigmoid_p'], hparams['depth_sigmoid_k'])
-        # loss = weighted_loss_sum(1, 0.1, loss, annealed_scaling_loss)
-        # num_p_loss = 1.0/gaussians.get_xyz.numel()
-        # loss = weighted_loss_sum(1, 1, loss, num_p_loss)
+
         loss = weighted_loss_sum([hparams['image_loss'], hparams['depth_loss'], hparams['scaling_loss']], [annealed_image_loss, annealed_depth_loss, annealed_scaling_loss])
         loss *= 10
-        # loss *= hparams['loss_multiplier']
         loss.backward()
 
         iter_end.record()
@@ -227,7 +151,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             # Densification
-            if iteration < opt.densify_until_iter: #len(gaussians.get_xyz) > opt.densify_until_iter:
+            if iteration < opt.densify_until_iter: 
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -249,7 +173,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
     return results
 
-def prepare_output_and_logger(args):    
+def prepare_output_and_logger(args):
+    '''
+        Create path for saving the model and a logger for tracking results
+        
+        :param args: arguments containing the model path
+        
+        :returns: tensorboard logger
+    '''
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str=os.getenv('OAR_JOB_ID')
@@ -272,6 +203,24 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_raw, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, numPoints):
+    '''
+        Logs training progress with tensorboard
+        :param tb_writer: Tensorboard logging object
+        :param iteration: Current iteration in training
+        :param Ll1_image: L1 loss for render
+        :param loss_mask: Loss on mask of render
+        :param boundary_loss_raw: Boundary loss for render
+        :param loss: Overall oss
+        :param l1_loss: L1 loss function
+        :param elapsed: Elapsed time
+        :param testing_iterations: Iterations to perform testing on
+        :param scene: Scene object for the model and ground truth views
+        :param renderFunc: Function for rendering the views of the model
+        :param renderArgs: Arguments to pass to rendering function
+        :param numPoints: Number of Gaussians in model
+        
+        :returns: A dictionary of training results at this point in training
+    '''
     result = {}
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss_image', Ll1_image.item(), iteration)
@@ -280,8 +229,6 @@ def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_ra
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
     
-    gaussian_blur = GaussianBlur(11)
-
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
@@ -303,16 +250,6 @@ def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_ra
                     mask = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["mask"], 0.0, 1.0)
                     gt_mask = torch.clamp(viewpoint.original_depth_mask.to("cuda"), 0.0, 1.0)   
                     gt_mask_bin = (gt_mask > 0).float()
-                    # mask_bin = (mask > 0).float()
-                    # gt_mask_bin = (gt_mask > 0).float()
-                    # blur the ground truth
-                    # gt_mask_blurred = torch.unsqueeze(gt_mask, 0)
-                    # gt_mask_blurred = gt_mask_blurred.repeat(1, 3, 1, 1)
-                    # # gt_mask_blurred = F.interpolate(gt_mask_blurred, scale_factor=1/10, mode='bilinear', align_corners=False)
-                    # # gt_mask_blurred = F.interpolate(gt_mask_blurred, scale_factor=10, mode='bilinear', align_corners=False)
-                    # gt_mask_blurred = gaussian_blur(gt_mask_blurred)
-                    # gt_mask_blurred.squeeze_(0)
-                    # gt_mask_blurred = rgb_to_grayscale(gt_mask_blurred) 
                     
                     if tb_writer and (idx < 5):
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
@@ -321,7 +258,6 @@ def training_report(tb_writer, iteration, Ll1_image, loss_mask, boundary_loss_ra
                         if iteration == testing_iterations[0]:
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth_mask".format(viewpoint.image_name), gt_mask[None], global_step=iteration)
-                            # tb_writer.add_images(config['name'] + "_view_{}/ground_truth_mask_blurred".format(viewpoint.image_name), gt_mask_blurred, global_step=iteration)
                     boundary_loss += boundary_loss_func(mask, gt_mask_bin, 1, 1).double()   
                     l1_test_image += l1_loss(image, gt_image).mean().double()
                     l1_test_mask += l1_loss(depths, gt_mask).mean().double()
@@ -388,6 +324,7 @@ if __name__ == "__main__":
     opt = op.extract(args)
     pipe = pp.extract(args)
     
+    # Hyperparameter optimization code
     if args.hparam_tune:
         def trainable(config):
             results = training(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, config)
@@ -397,6 +334,7 @@ if __name__ == "__main__":
         algo = ConcurrencyLimiter(algo, max_concurrent=4)
         num_samples = 100
         
+        # Define hyperparam search space
         search_space = {
             "boundary_dice_prop": tune.uniform(0.0, 1.0),
             "boundary_bce_prop": tune.uniform(0.0, 1.0),
@@ -407,12 +345,9 @@ if __name__ == "__main__":
             'boundary_depth': tune.uniform(0.0, 1.0),
             "depth_sigmoid_p": tune.uniform(0.0, 1.1),
             "depth_sigmoid_k": tune.uniform(-1.0, 1.0),
-            # "scale_sigmoid_p": tune.uniform(0.0, 1.1),
-            # "scale_sigmoid_k": tune.uniform(-1.0, 1.0),
             'image_loss': tune.uniform(0.0, 1.0),
             'depth_loss': tune.uniform(0.0, 1.0),
             'scaling_loss': tune.uniform(0.0, 1.0),
-            # 'loss_multiplier': tune.uniform(0.0, 33.0)
         }
         
         tune_config = tune.TuneConfig(
@@ -433,20 +368,10 @@ if __name__ == "__main__":
         )
         results = tuner.fit()
         print("Best hyperparameters found were: ", results.get_best_result().config)
+    
+    # Train without hparam tuning
     else:
-        # hparam = {'boundary_dice_prop': 0.26725613777853285, 'boundary_bce_prop': 0.36238144817574747, 'img_sigmoid_p': 0.08171925078722586, 'img_sigmoid_k': 0.5918202718904957, 'Ll1_depth': 0.45512229279602723, 'ssim_depth': 0.6778992259613144, 'boundary_depth': 0.10143219876129972, 'depth_sigmoid_p': 0.3209938517623887, 'depth_sigmoid_k': 0.40587387632931615, 'image_loss': 0.5463820596844736, 'depth_loss': 0.022054009819334253, 'scaling_loss': 0.2792196807170144}
-        # hparam = {'boundary_dice_prop': 0.18340450985343382, 'boundary_bce_prop': 0.21233911067827616, 'img_sigmoid_p': 0.15344324671724602, 'img_sigmoid_k': 0.22370578944475894, 'Ll1_depth': 0.8324426408004217, 'ssim_depth': 0.3663618432936917, 'boundary_depth': 0.18182496720710062, 'depth_sigmoid_p': 0.47513952050632735, 'depth_sigmoid_k': 0.04951286326447568, 'image_loss': 0.2912291401980419, 'depth_loss': 0.3042422429595377, 'scaling_loss': 0.29214464853521815}
-        # hparam = {'boundary_dice_prop': 0.4401524937396013, 'boundary_bce_prop': 0.09767211400638387, 'img_sigmoid_p': 0.7287745127893802, 'img_sigmoid_k': -0.48244003679996617, 'Ll1_depth': 0.3046137691733707, 'ssim_depth': 0.5200680211778108, 'boundary_depth': 0.6842330265121569, 'depth_sigmoid_p': 0.037827373226740235, 'depth_sigmoid_k': -0.00964617977745963, 'image_loss': 0.9093204020787821, 'depth_loss': 0.12203823484477883, 'scaling_loss': 0.31171107608941095}
-        # hparam = {'boundary_dice_prop': 0.5986584841970366, 'boundary_bce_prop': 0.9507143064099162, 'img_sigmoid_p': 0.7788798355756501, 'img_sigmoid_k': 0.2022300234864176, 'Ll1_depth': 0.3745401188473625, 'ssim_depth': 0.9699098521619943, 'boundary_depth': 0.7319939418114051, 'depth_sigmoid_p': 0.06389197338501941, 'depth_sigmoid_k': -0.6880109593275947, 'image_loss': 0.8661761457749352, 'depth_loss': 0.15601864044243652, 'scaling_loss': 0.020584494295802447}
-        
-        # Nov 9 hparam tuning on image and depth psnrs, no boundary loss though:
-        hparam = {'boundary_dice_prop': 0.033233219399004026, 'boundary_bce_prop': 0.6436413807391984, 'img_sigmoid_p': 0.01008129025382042, 'img_sigmoid_k': -0.9084480195520008, 'Ll1_depth': 0.9310024229990749, 'ssim_depth': 0.0714191045525289, 'boundary_depth': 0.05139642974053518, 'depth_sigmoid_p': 0.09626558054180495, 'depth_sigmoid_k': -0.6637714408505092, 'image_loss': 0.5443212115275131, 'depth_loss': 0.8516824065619147, 'scaling_loss': 0.1859502986539709}
-        
-        # Nov 10 combined metric loss
-        hparams={'boundary_dice_prop': 0.7072663092769335, 'boundary_bce_prop': 0.7567179358568938, 'img_sigmoid_p': 1.086743312041734, 'img_sigmoid_k': -0.5933987285312401, 'Ll1_depth': 0.38159149238473783, 'ssim_depth': 0.1257942061432118, 'boundary_depth': 0.44228481357720983, 'depth_sigmoid_p': 0.709852751117558, 'depth_sigmoid_k': -0.07288362148599577, 'image_loss': 0.4529836507526636, 'depth_loss': 0.8461601421454328, 'scaling_loss': 0.009799058383410901}
-        
         # Opt after render bug fix
-        hparams = {'boundary_dice_prop': 0.4318835235454354, 'boundary_bce_prop': 0.9052478919311929, 'img_sigmoid_p': 1.1, 'img_sigmoid_k': -0.5959912983264622, 'Ll1_depth': 0.6171146148837469, 'ssim_depth': 0.0, 'boundary_depth': 0.2780056000996264, 'depth_sigmoid_p': 1.0259194345391112, 'depth_sigmoid_k': 0.835191693021905, 'image_loss': 0.14695685368823122, 'depth_loss': 1.0, 'scaling_loss': 0.0}
         hparams = {'boundary_dice_prop': 0.4318835235454354, 'boundary_bce_prop': 0.9052478919311929, 'img_sigmoid_p': 1.1, 'img_sigmoid_k': -0.5959912983264622, 'Ll1_depth': 0.6171146148837469, 'ssim_depth': 0.0, 'boundary_depth': 1.0, 'depth_sigmoid_p': 1.0259194345391112, 'depth_sigmoid_k': 0.835191693021905, 'image_loss': 0.14695685368823122, 'depth_loss': 1.0, 'scaling_loss': 1.0}
         training(dataset, opt, pipe, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, hparam)
 

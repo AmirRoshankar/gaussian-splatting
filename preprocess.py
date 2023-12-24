@@ -9,11 +9,24 @@ import random
 import pathlib
 
 def refresh_dir(path):
+    '''
+        Delete and recreate given directory
+        
+        :param path: path to refresh
+    '''
     if os.path.exists(path):
         shutil.rmtree(path)
     os.makedirs(path)
 
 def convert_backgrounds(img_dir, mask_dir, dst_dir):
+    '''
+        Convert the backgrounds of the images to be transparent given the masks
+        
+        :param img_dir: Path to the ground truth images
+        :param mask_dir: Path to the masks for the images
+        :param dst_dir: Path to save the results
+    '''
+    
     for f in os.listdir(img_dir):
         if not f.endswith(".png"):
             continue
@@ -43,6 +56,17 @@ def convert_backgrounds(img_dir, mask_dir, dst_dir):
         cv2.imwrite(dst_path, rgba_image)
 
 def create_splits(input_dir, train_dir, test_dir, test_split=0.15):
+    '''
+        Create training and testing splits for the given dataset path
+        
+        :param input_dir:  Path to the input images
+        :param train_dir:  Path to save the training images
+        :param test_dir:   Path to save test images
+        :param test_split: Proportion of data to use for testing
+        
+        :returns: Lists of training and testing file paths
+    '''
+    
     refresh_dir(train_dir)
     refresh_dir(test_dir)
 
@@ -61,6 +85,15 @@ def create_splits(input_dir, train_dir, test_dir, test_split=0.15):
     return train, test
 
 def convert_transforms(all_tforms_path, test, dst_path):
+    '''
+        Convert transforms file to the format required by Gaussian Splatting
+        
+        :param all_tforms_path: Path to transforms
+        :param test: list of test file names
+        :param dst_path: path to save resulting transforms
+        
+    '''
+    
     all_tforms = open(all_tforms_path)
     all_tforms = all_tforms.read()
     all_tforms = json.loads(all_tforms)
@@ -68,7 +101,6 @@ def convert_transforms(all_tforms_path, test, dst_path):
     test = set(test)
 
     camera_angle_x = 0.6911112070083618
-    # rotation = 0.012566370614359171
     volume_shape = all_tforms['volume_shape']
     volume_spacing = all_tforms['volume_spacing']
 
@@ -121,6 +153,13 @@ def convert_transforms(all_tforms_path, test, dst_path):
         json.dump(transforms_train, outfile, indent=4)
 
 def convert_transforms_as(src_path, dst_path):
+    '''
+        Convert transforms file when train and test are already split
+        
+        :param src_path: Path to raw transforms
+        :param dst_path: path to save resulting transforms
+        
+    '''
     raw_tforms = open(src_path)
     raw_tforms = raw_tforms.read()
     raw_tforms = json.loads(raw_tforms)
@@ -190,8 +229,8 @@ if __name__ == "__main__":
         subdirs = ['train', 'test']
         for subdir in subdirs:
             subdir_path = os.path.join(args.source_path, subdir)
-            img_dir = os.path.join(subdir_path, "images") # copy over from mednerf
-            mask_dir = os.path.join(subdir_path, "masks")  # copy over from mednerf
+            img_dir = os.path.join(subdir_path, "images")
+            mask_dir = os.path.join(subdir_path, "masks")
             
             # extract images from ./images using ./masks and save to ./ where . is subdir
             convert_backgrounds(img_dir, mask_dir, subdir_path)

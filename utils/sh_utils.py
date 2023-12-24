@@ -23,6 +23,8 @@
 
 import torch
 
+# Utilities for converting RGB to and from Spherical Harmonics
+
 C0 = 0.28209479177387814
 C1 = 0.4886025119029199
 C2 = [

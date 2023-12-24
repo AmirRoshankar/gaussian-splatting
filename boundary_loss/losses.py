@@ -9,6 +9,11 @@ from torch import Tensor, einsum
 from boundary_loss.utils import simplex, probs2one_hot, one_hot
 from boundary_loss.utils import one_hot2hd_dist
 
+'''
+    Implementations of different loss functions for the boundary of the masks
+    Source: https://github.com/LIVIAETS/boundary-loss/blob/master/losses.py
+'''
+
 class CrossEntropy():
     def __init__(self, **kwargs):
         # Self.idc is used to filter out some classes of the target mask. Use fancy indexing
@@ -25,7 +30,6 @@ class CrossEntropy():
         loss /= mask.sum() + 1e-10
 
         return loss
-
 
 class GeneralizedDice():
     def __init__(self, **kwargs):

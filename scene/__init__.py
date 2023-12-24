@@ -23,31 +23,24 @@ from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 
 class CompositeScene:    
     def __init__(self, args : ModelParams, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
-        """b
+        """
+        Implementation of the scene class for a composite layered subject
+        
         :param path: Path to colmap scene main folder.
         """
         self.num_scenes = len(os.listdir(args.source_path)) - 1
         self.model_path = args.model_path
         self.max_sh_degree = args.sh_degree
-        # self.composite_gaussian = CompositeGaussianModel(args.sh_degree, self.num_scenes)
+
         self.args_list = {}
         self.load_iteration = load_iteration
         self.shuffle = shuffle
         self.resolution_scales = resolution_scales
         
-        # for i in range(self.num_scenes):
-        #     self.args_list.append(copy.deepcopy(args))
-        #     self.args_list[-1].source_path += "/" + str(i).zfill(3)
-        #     self.args_list[-1].model_path += "/" + str(i).zfill(3)
-        #     os.makedirs(self.args_list[-1].model_path, exist_ok=True)
-        self.args = args            
-        self.cur_scene = None
-        self.cur_gaussian = None
-        self.combined_scene = None
-        self.combined_gaussian = None
+        self.args = args
     
     def set_combined_scene(self, model_idxs, iteration):
-        # Create combined gausss
+        # Initialize the combined gausssian object
         self.combined_gaussian = CompositeGaussianModel(self.max_sh_degree, model_idxs=model_idxs)
         
         self.combined_args = copy.deepcopy(self.args)
@@ -61,34 +54,28 @@ class CompositeScene:
                              self.resolution_scales,
                              combined=True)
     
+    # Initialize a the current scene for a given layer
     def set_cur_scene(self, i):
         self.args_list[i] = copy.deepcopy(self.args)
         self.args_list[i].source_path += "/" + str(i).zfill(3)
         self.args_list[i].model_path += "/" + str(i).zfill(3)
         os.makedirs(self.args_list[i].model_path, exist_ok=True)
-            
+
         self.cur_gaussian = GaussianModel(self.max_sh_degree)
         self.cur_scene = Scene(self.args_list[i], 
                              self.cur_gaussian, 
                              self.load_iteration, 
                              self.shuffle, 
                              self.resolution_scales)
-    
-    def __getitem__(self, key):
-        return self.scenes[key]
-    
-    def save(self, iteration):
-        pass
-        # iteration_path = f"composite_point_cloud/iteration_{iteration}"
-        # point_cloud_path = os.path.join(self.model_path, iteration_path)
-        # self.composite_gaussian.save_ply(os.path.join(point_cloud_path, "composite_point_cloud.ply"))
 
 class Scene:
 
     gaussians : GaussianModel
 
     def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], combined=False):
-        """b
+        """
+        Implementation of a scene object for linking ground truth views with a Gaussian model
+        
         :param path: Path to colmap scene main folder.
         """
         self.model_path = args.model_path

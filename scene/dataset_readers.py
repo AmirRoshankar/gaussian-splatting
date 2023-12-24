@@ -24,6 +24,7 @@ from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 
 class CameraInfo(NamedTuple):
+    # Data class for storing camera view details
     uid: int
     R: np.array
     T: np.array
@@ -37,6 +38,7 @@ class CameraInfo(NamedTuple):
     height: int
 
 class SceneInfo(NamedTuple):
+    # Data class holding details about the entire scene
     point_cloud: BasicPointCloud
     train_cameras: list
     test_cameras: list
@@ -67,6 +69,7 @@ def getNerfppNorm(cam_info):
     return {"translate": translate, "radius": radius}
 
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
+    # Load ground truth camera views pre-processed by COLMAP
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -131,6 +134,7 @@ def storePly(path, xyz, rgb):
     ply_data.write(path)
 
 def readColmapSceneInfo(path, images, eval, llffhold=8):
+    # Load ground truth cameras images pre-processed by COLMAP
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -178,6 +182,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
     return scene_info
 
 def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
+    # Load ground truth camera transforms in Blender format
     cam_infos = []
 
     with open(os.path.join(path, transformsfile)) as json_file:
@@ -225,6 +230,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
     return cam_infos
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
+    # Load camera info from Nerf format files
     print("Reading Training Transforms")
     train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
     print("Reading Test Transforms")
@@ -237,7 +243,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "points3d.ply")
-    # if not os.path.exists(ply_path):
+
     # Since this data set has no colmap data, we start with random points
     num_pts = 100_000
     print(f"Generating random point cloud ({num_pts})...")
@@ -248,10 +254,6 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
 
     storePly(ply_path, xyz, SH2RGB(shs) * 255)
-    # try:
-    #     pcd = fetchPly(ply_path)
-    # except:
-    #     pcd = None
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
@@ -261,6 +263,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     return scene_info
 
 sceneLoadTypeCallbacks = {
+    # Different ground truth info loading strategies
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo
 }

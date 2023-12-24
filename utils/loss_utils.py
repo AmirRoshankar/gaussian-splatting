@@ -19,6 +19,7 @@ from math import exp
 
 bce_loss = nn.BCELoss()
 
+# Image dilating function for torch
 def dilate(input_tensor, kernel_size):
     # Create a kernel with ones of size kernel_size
     kernel = torch.ones(1, 1, kernel_size, kernel_size, device=input_tensor.device)
@@ -32,6 +33,7 @@ def dilate(input_tensor, kernel_size):
     
     return dilated_output.int()
 
+# Image eroding function for torch
 def erode(input_tensor, kernel_size):
     # Create a kernel with ones of size kernel_size
     kernel = torch.ones(1, 1, kernel_size, kernel_size, device=input_tensor.device)
@@ -46,36 +48,36 @@ def erode(input_tensor, kernel_size):
     return eroded_output.int()
 
 def sigmoid_anneal(loss, it, max_its, prop, k=1.0):
-    # k from -1 to 1 is valid
-    # prop from 0 to 1.1 is valid
+    '''
+        Annealing function for smoothly turning a loss term on/off
+        :param loss: Given raw loss value
+        :param it: Current iteration in training
+        :param max_its: Maximum number of iterations in training
+        :param prop: Proportion of max iterations before inflection
+        :param k: Shape of inflection
+    '''
     x = torch.ones((1)).to(loss.device) * it
     x = (x - max_its * prop) / (k * max_its)
     return loss * torch.sigmoid(x)
 
-
-def anneal_loss(loss, it, max_its, prop):
-    # return loss * math.cos(it * math.pi / (2 * max_its))
-    # return loss * torch.sigmoid(-(torch.ones((1)).to(loss.device)*it - max_its/5))
-    return loss * torch.sigmoid(-(torch.ones((1)).to(loss.device)*it*(1/prop) - max_its))
-
+# Cosine annealing loss
 def cos_anneal_loss(loss, it, max_its):
     return loss * math.cos(it * math.pi / (2 * max_its))
-    # return loss * torch.sigmoid(-(torch.ones((1)).to(loss.device)*it - max_its/5))
 
-def sin_grow_loss(loss, it, max_its):
-    return loss * math.sin(it * math.pi / (2 * max_its))
-    # return loss * torch.sigmoid(-(torch.ones((1)).to(loss.device)*it - max_its/5))    
-
+# Weighted average of losses
 def weighted_loss_sum(weights, losses):
     num = sum([w * l for w,l in zip(weights, losses)])
     denom = sum(weights)
     return num / denom
 
+# IOU loss implementation
 def dice_loss(prediction, target):
     intersection = torch.sum(target * prediction)
     union = torch.sum(target + prediction)
     return 1.0 - 2 * intersection / union
 
+# Boundary loss calculated by masking boundary of mask and calculting
+#   dice loss on just that region
 def boundary_loss_func(prediction, target, dice_prop, bce_prop):
     erode_target = erode(target, 13)
     dilate_target = dilate(target, 21)
@@ -83,10 +85,6 @@ def boundary_loss_func(prediction, target, dice_prop, bce_prop):
     masked_pred = mask * prediction
     masked_target = mask * target
     
-    # cv2.imwrite("masked_pred.png", masked_pred.detach().cpu().view(200, 200, 1).numpy() * 255)
-    # cv2.imwrite("masked_target.png", masked_target.detach().cpu().view(200, 200, 1).numpy() * 255)
-    # cv2.imwrite("mask.png", mask.detach().cpu().view(200, 200, 1).numpy() * 255)
-
     dice = dice_loss(masked_pred, masked_target)
     bce = bce_loss(masked_pred, masked_target)
     

@@ -22,11 +22,21 @@ from utils.image_utils import psnr
 from argparse import ArgumentParser
 
 def readImages(renders_dir, gt_dir, render_masks_dir, gt_mask_dir):
+    '''
+        Load in images and masks for renders and ground truths
+        
+        :param renders_dir: Path of rendered images
+        :param gt_dir: Path to ground truth images
+        :param renders_dir: Path of rendered masks
+        :param gt_dir: Path to ground truth masks
+        
+        :returns: rendered images, ground truth images, rendered masks, ground truth masks, image names
+    '''
     renders = []
     gts = []
     masks = []
     gt_masks = []
-    gt_masks_blur = []
+    # gt_masks_blur = []
     image_names = []
     for fname in os.listdir(renders_dir):
         render = Image.open(renders_dir / fname)
@@ -44,7 +54,11 @@ def readImages(renders_dir, gt_dir, render_masks_dir, gt_mask_dir):
     return renders, gts, masks, gt_masks, image_names
 
 def evaluate(model_paths):
-
+    '''
+        Calculate performance metrics for the model at the given path
+        
+        :param model_paths: List of model paths
+    '''
     full_dict = {}
     per_view_dict = {}
     full_dict_polytopeonly = {}
@@ -77,15 +91,18 @@ def evaluate(model_paths):
                 render_masks_dir = method_dir / "render_masks"
                 renders, gts, masks, gt_masks, image_names = readImages(renders_dir, gt_dir, render_masks_dir, gt_mask_dir)
 
+                # image metrics
                 image_ssims = []
                 image_psnrs = []
                 image_lpipss = []
 
+                # mask metrics
                 mask_ssims = []           
                 mask_psnrs = []      
                 mask_lpipss = [] 
                 mask_dices = []
                 
+                # metrics for blurred masks
                 # mask_blur_ssims = []           
                 # mask_blur_psnrs = []      
                 # mask_blur_lpipss = [] 
@@ -121,6 +138,7 @@ def evaluate(model_paths):
                 # print(" Blur Mask DICE: {:>12.7f}".format(torch.tensor(mask_blur_dices).mean(), ".5"))
                 # print("")
 
+                # Update each metric
                 full_dict[scene_dir][method].update({"IMAGE_SSIM": torch.tensor(image_ssims).mean().item(),
                                                         "IMAGE_PSNR": torch.tensor(image_psnrs).mean().item(),
                                                         "IMAGE_LPIPS": torch.tensor(image_lpipss).mean().item(),
@@ -149,6 +167,7 @@ def evaluate(model_paths):
                                                             # "BLUR_MASK_LPIPS": {name: lp for lp, name in zip(torch.tensor(mask_blur_lpipss).tolist(), image_names)},
                                                             # "BLUR_MASK_DICE": {name: lp for lp, name in zip(torch.tensor(mask_blur_dices).tolist(), image_names)}})
 
+            # Save results
             with open(scene_dir + "/results.json", 'w') as fp:
                 json.dump(full_dict[scene_dir], fp, indent=True)
             with open(scene_dir + "/per_view.json", 'w') as fp:

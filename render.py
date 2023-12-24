@@ -10,7 +10,6 @@
 #
 
 import shutil
-import fastjsonschema
 import torch
 from scene import Scene
 import os
@@ -26,6 +25,18 @@ from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, overwrite):
+    '''
+        Render images and masks for evaluation
+        
+        :param model_path: Path to the model
+        :param name: Name of the model
+        :param iteration: Iteration of the model to render
+        :param views: Views to render from
+        :param gaussians: Gaussian model to render
+        :param pipeline: Pipeline for rendering
+        :param background: Background colour for rendering
+        :param overwrite: Whether to overwrite the existing renders   
+    '''
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     render_mask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "render_masks")
@@ -72,6 +83,17 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         torchvision.utils.save_image(gt_mask_blurred, os.path.join(gt_masks_blur_path, '{0:05d}'.format(idx) + ".png"))
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, overwrite : bool):
+    '''
+        Render train and test sets
+        
+        :param dataset: Dataset for Gaussian model initialization
+        :param iteration: Iteration of the model to render
+        :param pipeline: Pipeline for rendering
+        :param skip_train: Whether to skip the training set
+        :param skip_test: Whether to skip the testing set
+        :param overwrite: Whether to overwrite the existing renders   
+    '''
+    
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)

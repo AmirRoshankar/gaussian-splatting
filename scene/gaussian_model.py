@@ -23,6 +23,9 @@ from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
 class CompositeGaussianModel:
+    '''
+        Implementation of a composite, multi-layer Gaussian model
+    '''
     def __init__(self, sh_degree : int, model_idxs : List[int]):
         self.max_sh_degree = sh_degree  
         self.model_count = len(model_idxs)
@@ -31,9 +34,14 @@ class CompositeGaussianModel:
             self.models[i] = GaussianModel(self.max_sh_degree)
         self.active_sh_degree = 0
     
-    def __getitem__(self, key):
-        return self.models[key]
-        
+    # Get a single Gaussian model from the composite based on id
+    def __getitem__(self, id):
+        return self.models[id]
+    
+    # Get different attributes of the composite model given index 
+    #   list of the layers of interest
+    #############################################################
+    
     def get_scaling(self, model_idxs=None):
         model_idxs = list(self.models.keys()) if model_idxs is None else model_idxs
         scalings = [self.models[m].get_scaling for m in model_idxs]
@@ -54,12 +62,12 @@ class CompositeGaussianModel:
             return torch.cat((xyzs), 0)
         except:
             print([v.shape for v in xyzs])
+            raise ValueError(f"XYZ has incorrect shape {xyzs}")
     
     def get_max_radii2D(self, model_idxs=None):
         model_idxs = list(self.models.keys()) if model_idxs is None else model_idxs
         max_radii2Ds = [self.models[m].max_radii2D for m in model_idxs]
         max_radii2Ds = [o.unsqueeze(0) if len(o.shape) == 1 else o for o in max_radii2Ds]
-        print("shapes", [m.shape for m in max_radii2Ds])
         return torch.cat((max_radii2Ds), 0)
 
     def get_xyz_gradient_accum(self, model_idxs=None):
@@ -110,12 +118,14 @@ class CompositeGaussianModel:
         spatial_lr_scales = [o.unsqueeze(0) if len(o.shape) == 1 else o for o in spatial_lr_scales]
         return torch.tensor(spatial_lr_scales)
     
+    # Scaling regularization loss to keep scalings small and Gaussians globular 
     def scaling_reg_loss(self):
         scalings = torch.sigmoid(self.get_scaling())
         alpha = 10
         beta = 5
         return beta * torch.mean(scalings) + alpha * torch.std(scalings)
     
+    # Return all features of the gaussian model for the given layer indices
     def capture(self, model_idxs=None):
         model_idxs = list(self.models.keys()) if model_idxs is None else model_idxs
         return (
@@ -130,25 +140,10 @@ class CompositeGaussianModel:
             self.get_max_radii2D(model_idxs),
             self.get_xyz_gradient_accum(model_idxs),
             self.get_denom(model_idxs),
-            # self.optimizer.state_dict(),
             self.get_spatial_lr_scale(model_idxs),
         )
-    
-    def construct_list_of_attributes(self):
-        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-        # All channels except the 3 DC
-        for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
-            l.append('f_dc_{}'.format(i))
-        for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
-            l.append('f_rest_{}'.format(i))
-        l.append('opacity')
-        l.append('geometry_opacity')
-        for i in range(self._scaling.shape[1]):
-            l.append('scale_{}'.format(i))
-        for i in range(self._rotation.shape[1]):
-            l.append('rot_{}'.format(i))
-        return l
-    
+        
+    # Save every layer of the composite Gaussian model
     def save_ply(self, model_path, load_iter):
         model_path = os.path.dirname(model_path)
         for i in self.models.keys():
@@ -159,50 +154,34 @@ class CompositeGaussianModel:
                             "point_cloud.ply")
             self.models[i].save_ply(load_path)
             assert(os.path.exists(load_path))
-            
-        # path_dir = os.path.dirname(path)
-        # mkdir_p(path_dir)
 
-        # all_model_idxs = [i for i in range(self.model_count)]
-        # xyz = self.get_xyz(all_model_idxs).detach().cpu().numpy()
-        # normals = np.zeros_like(xyz)
-        # f_dc = self.get_features_dc(all_model_idxs).detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        # f_rest = self.get_features_rest(all_model_idxs).detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        # opacities = self.get_opacity(all_model_idxs).detach().cpu().numpy()
-        # geometry_opacities = self.get_geometry_opacity(all_model_idxs).detach().cpu().numpy()
-        # scale = self.get_scaling(all_model_idxs).detach().cpu().numpy()
-        # rotation = self.get_rotation(all_model_idxs).detach().cpu().numpy()
-
-        # dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
-
-        # elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        # attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, geometry_opacities,
-        #                                 scale, rotation), axis=1)
-        # elements[:] = list(map(tuple, attributes))
-        # el = PlyElement.describe(elements, 'vertex')
-        # PlyData([el]).write(path)
-                    
+    # Initialize each layer from a pcd
     def create_from_pcd(self, pcds, spatial_lr_scales, model_idxs=None):
         model_idxs = list(self.models.keys()) if model_idxs is None else model_idxs
         for m in model_idxs:
             self.models[m].create_from_pcd(pcds[m], spatial_lr_scales[m])
-            
+    
+    # Restore every layer of the composite model
     def restore(self, model_args, training_args):
         for m in self.models.keys():
             self.models[m].restore(model_args, training_args)
     
+    # Set up every model for training
     def training_setup(self, training_args):
         for m in self.models.keys():
             self.models[m].training_setup(training_args)
         
+    # Update the learning rate for every model
     def update_learning_rate(self, iteration):
         lrs = [self.models[m].update_learning_rate(iteration) for m in self.models.keys()]
         return lrs
 
+    # Increment the SH degree of the composite model
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
-            
+
+    # Load every layer model from the respective model path
     def load_ply(self, model_path, load_iter):
         model_path = os.path.dirname(model_path)
         for i in self.models.keys():
@@ -214,7 +193,9 @@ class CompositeGaussianModel:
             self.models[i].load_ply(load_path)
             
 class GaussianModel:
-
+    '''
+        Implementation of a Gaussian Model for Volume to GS conversion
+    '''
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
@@ -232,7 +213,7 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-
+    # Initialize model features
     def __init__(self, sh_degree : int):
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
@@ -242,7 +223,7 @@ class GaussianModel:
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
-        self._geometry_opacity = torch.empty(0)
+        self._geometry_opacity = torch.empty(0) # Opacity analogue but for mask/geometry rendering
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -251,6 +232,7 @@ class GaussianModel:
         self.spatial_lr_scale = 0
         self.setup_functions()
 
+    # Get all model features
     def capture(self):
         return (
             self.active_sh_degree,
@@ -268,6 +250,7 @@ class GaussianModel:
             self.spatial_lr_scale,
         )
     
+    # Reset all model features to given values
     def restore(self, model_args, training_args):
         (self.active_sh_degree, 
         self._xyz, 
@@ -310,7 +293,7 @@ class GaussianModel:
         try:
             res = torch.cat((features_dc, features_rest), dim=1)
         except:
-            print("issue with getting features")
+            print("Issue with getting GS features")
             print(features_dc.shape, features_rest.shape)
         return res
     
@@ -322,12 +305,15 @@ class GaussianModel:
     def get_geometry_opacity(self):
         return self.opacity_activation(self._geometry_opacity)
     
+    # Get scaling regularization loss to keep scalings small and Gaussians globular
     def scaling_reg_loss(self):
         scalings = torch.sigmoid(self._scaling)
         alpha = 10
         beta = 5
         return beta * torch.mean(scalings) + alpha * torch.std(scalings)
     
+    # Get loss term that penalizes Gaussians that are opaque and black
+    # Does not help training!
     def black_spot_loss(self):
         black_opaques = torch.exp(10 * (self.get_opacity -1)) * (1 - (torch.mean(SH2RGB(self._features_dc), dim=-1)))
         black_opaques = black_opaques.squeeze(-1)
@@ -340,6 +326,7 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
+    # Initialize model features from a point cloud
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
@@ -411,6 +398,7 @@ class GaussianModel:
             l.append('rot_{}'.format(i))
         return l
 
+    # Save model to given path
     def save_ply(self, path):
         mkdir_p(os.path.dirname(path))
 
@@ -428,21 +416,23 @@ class GaussianModel:
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
         attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, geometry_opacities,
                                         scale, rotation), axis=1)
-        # attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities,
-        #                                 scale, rotation), axis=1)
+        
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
+    # Reset the opacity values of the Gaussian model
     def reset_opacity(self):
         opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
+        # Code breaks when geometry opacity gets reset
         # geometry_opacities_new = inverse_sigmoid(torch.min(self.get_geometry_opacity, torch.ones_like(self.get_geometry_opacity)*0.01))
         # optimizable_tensors = self.replace_tensor_to_optimizer(geometry_opacities_new, "geometry_opacity")
         # self._geometry_opacity = optimizable_tensors["geometry_opacity"]
 
+    # Load the Gaussian model from the given path
     def load_ply(self, path):
         plydata = PlyData.read(path)
 
@@ -564,8 +554,6 @@ class GaussianModel:
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_geometry_opacities, 
                                 new_scaling, new_rotation):
-    # def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, 
-    #                             new_scaling, new_rotation):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
@@ -610,8 +598,6 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_geometry_opacity,
                                    new_scaling, new_rotation)
-        # self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity,
-        #                            new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         if torch.all(prune_filter):
@@ -634,36 +620,32 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_geometry_opacities,
                                    new_scaling, new_rotation)
-        # self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities,
-        #                            new_scaling, new_rotation)
 
     def densify_and_prune(self, max_grad, min_opacity, min_geometry_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
+        # Toggle to limit size of each layer for faster computation
         # if len(self.get_xyz) <= 100_000:
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
 
-        # min_opacity = min(min_opacity, self.get_opacity.max())
         if self.get_opacity.shape[0] == 1:
             prune_mask = torch.ones((1)).bool().to(self.max_radii2D.device)
         else:
             prune_mask = (self.get_opacity < min_opacity).squeeze()
-        # prune_mask = (self.get_opacity < min_opacity).squeeze()
-        # if len(prune_mask.shape) != 1:
-        #     prune_mask = torch.ones_like(self.get_opacity) > 0
+       
         assert len(prune_mask.shape) == 1, f"prune mask shape {prune_mask.shape} {self.get_opacity.shape}"
-        # prune_geometry_mask = (self.get_geometry_opacity < min_geometry_opacity).squeeze()
+
+        # Performance worsens when we prune with geometric mask
         # prune_mask = torch.logical_or(prune_mask, prune_geometry_mask)
+        
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
             
         if torch.all(prune_mask):
-            # assert False, "Tried to remove all points"
-            # print("Tried to remove all points")
             prune_mask = ~prune_mask
             
         self.prune_points(prune_mask)
